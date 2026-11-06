@@ -198,6 +198,8 @@ try {
   await page.mouse.move(30,30); await page.mouse.down(); await page.mouse.move(180,160);
   await worker.evaluate(async () => { const [tab] = await chrome.tabs.query({ active: true }); await chrome.tabs.sendMessage(tab.id, {action:'toggleOverlay'}); });
   await page.waitForFunction(() => document.querySelector('#vibe-annotations-root').style.display === 'none');
+  // Deactivation hides the host synchronously; draft cleanup awaits the worker/IDB.
+  await page.locator('.vibe-popover-anchor').waitFor({ state: 'detached' });
   assert.equal(await page.locator('.vibe-region-shade').count(), 0);
   assert.equal(await page.locator('.vibe-popover-anchor').count(), 0);
   assert.equal(await host.evaluate(el => el.matches(':popover-open')), false);

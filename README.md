@@ -67,9 +67,10 @@ with Chromium installed. The runner uses a temporary persistent profile, blocks 
 HTTP requests, and exercises real Angular/Material, bridge storage and popover Save.
 The production fixture is an optimized JIT bundle, not an Angular CLI AOT-build test.
 
-Angular reader, durable manual screenshots, local capture/export, and stage-4
-Material interaction isolation are implemented. This is not a release, final
-integration acceptance, or a claim of intermediate-version compatibility.
+Angular reader, durable manual screenshots, local capture/export, and Material
+interaction isolation are implemented. The stage-5 integration evidence and remaining
+acceptance limits are recorded below; this is not a release or a compatibility claim
+for untested versions.
 
 ### Manual local screenshots
 
@@ -183,6 +184,51 @@ It bypasses the permission prompt and rejects capture at the worker API boundary
 it is interaction acceptance, not a replacement for the real GUI permission/WebP
 checks above. The EventTarget runner also checks repeat injection over a later
 page patch and documents the native bypass boundaries.
+
+### Final local integration matrix (stage 5, 2026-11-06)
+
+All runs use the built unpacked extension, isolated persistent Chromium 156.0.8078.4
+profiles and Node 22.23.2, without starting MCP or modifying the mandatory permissions.
+Paths below are relative to `packages/extension/tests/`.
+
+| Acceptance surface | Final-run evidence | Limits |
+|---|---|---|
+| Angular 17.3.12/CDK 17.3.10 and Angular 20.0.0/CDK 20.0.4 | `angular-runtime/run.mjs`: nesting, root/component hosts, embedded/projection/recursive/standalone/lazy/same-name components, dialogs/portals, ShadowDom, stop reasons and zero input getter reads | TemplateRef dialog owner remains `MatDialogContainer`; root-host TemplatePortal has no owner. No invented AppComponent ancestry |
+| Actual Angular context → saved annotation → reviewed ZIP | Same runner: real Annotate/Save, downloaded JSON/Markdown, owner-relative locator resolves to selected conditional button; URL secrets/input values absent and internal URL preserved | Fixture `CardComponent` + `fixture-card` + `conditional` identifies `angular-runtime/main.js`'s CardComponent template; this is not source-map inference |
+| Optimized JIT production / DOM-only UI | `angular-runtime/run.mjs` on both dependency sets: actual Annotate → text → Save persisted DOM identity under the current URL, without invented Angular context | Not Angular CLI AOT, not a real target-app run |
+| Material editing and native top layer | `material-interaction-runtime.mjs` on both versions: held/short/Enter selection, independent click, two dialogs, region/backdrop, typing/paste/IME, Tab wrapping, staged Escape, focus restore, repeated/SPA/disable cleanup | Real installed UI, but this runner bypasses permission and rejects capture; not screenshot-byte evidence. Both tested CDK containers are ordinary DIVs |
+| EventTarget compatibility | `event-target-runtime.mjs`: identity/options/once/reentrancy/remove/abort/object callbacks/passive/errors/order, GC release, repeat bridge injection | Saved native methods, property handlers, preinstalled listeners and other ancestor capture remain bypasses; not a hostile-page security boundary |
+| Region interaction | `region-selection-runtime.mjs`: directions, edges, minimum sides, long hold, pointer cancellation/loss, Escape/blur/scroll/resize and immediate independent click | Browser viewport only, not desktop capture |
+| Reviewed image ZIP/clipboard | `local-export-runtime.mjs`: real review/download, unzip, exact committed WebP bytes and decode, nested sensitive-field/image exclusions, missing-byte error, originals retained | Export fixture seeds real extension IDB images/context; actual Angular context export is independently covered above |
+| Optional sync boundary | `local-attachment-sync.mjs`: outbound local-ref exclusion and remote-merge retention | Recording fetch boundary, not a live MCP integration run |
+| Automatic capture regression | `local-capture-runtime.mjs` reached and passed legacy Screenshots=ON / empty Save / zero capture-call checks | Full stage-5 run did **not** pass: native permission UI focus changes cancelled capture before the injected quota check |
+| Capture geometry and durable lifecycle | Prior stage-3 grid evidence: DPR 1/1.25/2, zoom 80/100/125%, scroll/pinch/fixed/sticky and tab/window/geometry/decode races; prior stage-2 full restart/quota/delete/clear run | **Not repeated successfully in stage 5.** Geometry denial run blocked at real browser permission UI; no new pixel/restart acceptance is claimed |
+| Local production build | `pnpm --filter vibe-annotations-extension build` → `.output/chrome-mv3` | No ZIP release, publishing or server start |
+
+The disable regression waits for asynchronous worker/IDB draft cleanup before asserting
+that the card is detached; host hiding alone is not cleanup completion. No production
+behavior was changed to satisfy that assertion.
+
+The screenshot blocker is specific: foreground/native-permission automation invalidated
+the focused-window guard; later `orca computer get-app-state --app pid:… --restore-window`
+could not read the visible Chromium AX window (`permission_denied`), even though
+`orca computer permissions` reported Accessibility and screenshots granted. Both direct
+PID/window targeting and geometry's `NORMAL_PERMISSIONS=1` (without `--enable-automation`)
+were attempted. Permission approval was observed, but denial, final screenshot bytes and
+the full restart suite were not reaccepted. The mandatory manifest was not broadened,
+the focus guard was not bypassed, and experimental test workarounds were removed.
+Repeating this part needs functioning native permission-dialog automation and an
+uninterrupted foreground test window. Forced worker termination exactly between IDB
+binding and chrome.storage publication also remains untested.
+
+**Not release acceptance:** the target application/build and exact Angular/CDK version
+were not supplied. Intermediate versions and Angular CLI AOT production are untested;
+the production fixture is optimized/minified JIT. Public ownership and EventTarget
+limits above are unchanged. The known `floating-toolbar-position.test.js` MockElement
+failure (`sendEl.setAttribute is not a function`, 8/9 nested scenarios) was not rerun
+or weakened; this matrix does not claim a green general unit suite. “Copy for OMP”
+remains a future stage, not part of this implementation.
+
 
 
 ## Contributing

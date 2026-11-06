@@ -5,6 +5,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const extension = resolve(here, '../..');
@@ -122,6 +123,19 @@ try {
       assert.equal(context.target_identity.tag, 'button');
       assert.ok(context.selector);
       assert.equal(await page.evaluate(() => typeof window.ng?.getComponent), 'undefined');
+      await page.locator('.vibe-tb-annotate').click();
+      await page.locator('button[data-testid]').first().click();
+      const comment = `DOM fallback UI ${path}`;
+      await page.locator('.vibe-textarea').fill(comment);
+      await page.locator('.vibe-save-btn').click();
+      await page.waitForFunction(async comment => (await window.__vibeAnnotations.getAnnotations()).some(a => a.comment === comment), comment);
+      const worker = browser.serviceWorkers()[0];
+      const saved = await worker.evaluate(async comment => ((await chrome.storage.local.get('annotations')).annotations || []).find(a => a.comment === comment), comment);
+      assert.ok(saved, `DOM fallback Save must persist ${comment}`);
+      assert.equal(saved.url, page.url(), 'fallback annotation belongs to the current page');
+      assert.ok(saved.element_context.angular == null, 'DOM fallback must not invent Angular context');
+      assert.equal(saved.element_context.target_identity.tag, 'button');
+      assert.ok(saved.selector);
     }
     console.log('PASS: optimized Angular production runtime and non-Angular DOM fallback');
   }
@@ -260,4 +274,34 @@ async function verifyPersistence(page, context) {
   assert.equal(ui.element_context.angular.template_owner.name, 'CardComponent');
   assert.equal(ui.element_context.target_identity.relative_selector, '[data-testid="conditional"]');
   console.log('PASS: actual Annotate → element selection → popover comment → Save → structured Angular storage');
+  // Cross the actual review/download boundary with context produced by Angular,
+  // not the hand-seeded privacy fixture in local-export-runtime.mjs.
+  await page.locator('.vibe-popover').waitFor({ state: 'detached' });
+  await page.keyboard.press('Escape');
+  await page.locator('.vibe-tb-viewall').click();
+  await page.locator('.vibe-viewall-export').click();
+  await page.locator('.vibe-share-opt').click();
+  await page.locator('.vibe-export-review').waitFor();
+  const downloadReady = page.waitForEvent('download');
+  await page.locator('[data-action="continue"]').click();
+  const archive = await (await downloadReady).path();
+  const exported = JSON.parse(execFileSync('unzip', ['-p', archive, 'annotations.json'], { encoding: 'utf8' }));
+  const exportedUI = exported.annotations.find(a => a.id === ui.id);
+  assert.equal(exportedUI.element_context.angular.template_owner.name, 'CardComponent');
+  assert.equal(exportedUI.element_context.angular.template_owner.host.tag, 'fixture-card');
+  assert.deepEqual(exportedUI.element_context.angular.chain.components, ['AppComponent', 'CardComponent']);
+  assert.equal(exportedUI.element_context.angular.chain.status, 'observed');
+  assert.equal(exportedUI.element_context.angular.chain.stop_reason, 'no_owner');
+  assert.equal(exportedUI.element_context.target_identity.match_count, 1);
+  assert.equal(await page.evaluate(identity => {
+    const ownerHost = document.querySelector('fixture-card');
+    return ownerHost.querySelector(identity.relative_selector) === document.querySelector('[data-testid="conditional"]');
+  }, exportedUI.element_context.target_identity), true, 'exported owner-relative locator finds the selected template node');
+  const markdown = execFileSync('unzip', ['-p', archive, 'annotations.md'], { encoding: 'utf8' });
+  assert.match(markdown, /CardComponent/);
+  assert.match(markdown, /conditional/);
+  assert.doesNotMatch(JSON.stringify(exported) + markdown, /private=query|#private|DO_NOT_COLLECT/);
+  assert.equal(await page.evaluate(() => window.inputReads), 0);
+  assert.equal((await worker.evaluate(async () => (await chrome.storage.local.get('annotations')).annotations)).find(a => a.id === ui.id).url, ui.url);
+  console.log('PASS: actual Angular Save → review → ZIP JSON/Markdown → owner-relative selected node; no input values or URL secrets');
 }
