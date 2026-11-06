@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -113,6 +113,7 @@ try {
     assert.ok(shadow.context.selector.includes(' >> '));
     console.log('PASS: real Angular ShadowDom owner, structural locator and shadow-aware document selector');
     await verifyPersistence(page, browser);
+    await verifyOMPCopy(page, browser, origin);
     for (const path of ['/production?production', '/plain']) {
       await page.goto(origin + path);
       if (path.startsWith('/production')) await page.waitForFunction(() => window.fixtureReady);
@@ -136,6 +137,9 @@ try {
       assert.ok(saved.element_context.angular == null, 'DOM fallback must not invent Angular context');
       assert.equal(saved.element_context.target_identity.tag, 'button');
       assert.ok(saved.selector);
+      await page.locator('.vibe-popover').waitFor({ state: 'detached' });
+      await page.keyboard.press('Escape');
+      await verifyDOMCopy(page, browser, origin);
     }
     console.log('PASS: optimized Angular production runtime and non-Angular DOM fallback');
   }
@@ -304,4 +308,118 @@ async function verifyPersistence(page, context) {
   assert.equal(await page.evaluate(() => window.inputReads), 0);
   assert.equal((await worker.evaluate(async () => (await chrome.storage.local.get('annotations')).annotations)).find(a => a.id === ui.id).url, ui.url);
   console.log('PASS: actual Angular Save → review → ZIP JSON/Markdown → owner-relative selected node; no input values or URL secrets');
+}
+
+async function copyOMP(page, context, origin, selectedComments = null) {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+  await page.bringToFront();
+  // View-all may already be open after export.
+  if (!await page.locator('.vibe-viewall-copy').isVisible()) await page.locator('.vibe-tb-viewall').click();
+  await page.locator('.vibe-viewall-copy').click();
+  await page.locator('[data-copy-format]').selectOption('omp');
+  if (selectedComments) {
+    for (const row of await page.locator('.vibe-export-item').all()) {
+      if (!selectedComments.includes(await row.locator('.vibe-export-row strong').innerText())) await row.locator('[data-id]').uncheck();
+    }
+  }
+  await page.locator('[data-action="continue"]').click();
+  await page.locator('.vibe-export-review').waitFor({ state: 'detached' });
+  return page.evaluate(() => navigator.clipboard.readText());
+}
+
+async function verifyOMPCopy(page, context, origin) {
+  const worker = context.serviceWorkers()[0];
+  assert.equal(await worker.evaluate(() => chrome.runtime.getManifest().name), 'ng-vibe-remarker');
+  assert.equal(await worker.evaluate(() => chrome.runtime.getManifest().action.default_title), 'ng-vibe-remarker');
+  assert.equal(await page.locator('.vibe-toolbar-logo').getAttribute('title'), 'ng-vibe-remarker');
+  assert.equal(await page.locator('.vibe-toolbar-logo').evaluate(img => img.complete && img.naturalWidth > 0), true);
+  const manager = await context.newPage();
+  await manager.goto('chrome://extensions');
+  await manager.locator('extensions-item').filter({hasText:'ng-vibe-remarker'}).waitFor();
+  await manager.close();
+  await page.bringToFront();
+  const create = (selector, comment) => page.evaluate(({selector, comment}) => window.__vibeAnnotations.createAnnotation(selector, { comment }), {selector, comment});
+  for (const [selector, comment] of [['fixture-card','OMP component host'], ['[data-testid="same-a"]','OMP same A'], ['[data-testid="same-b"]','OMP same B']]) await create(selector, comment);
+  await page.evaluate(() => window.fixture.open('plain'));
+  await page.waitForSelector('[data-testid="dialog-action"]');
+  await create('[data-testid="dialog-action"]', 'OMP component dialog');
+  await page.evaluate(() => window.fixture.dialog.closeAll());
+  await page.waitForSelector('[data-testid="dialog-action"]', {state:'detached'});
+  await page.evaluate(() => window.fixture.open('template'));
+  await page.waitForSelector('[data-testid="template-dialog"]');
+  await create('[data-testid="template-dialog"]', 'OMP limited template dialog');
+  await page.evaluate(() => window.fixture.dialog.closeAll());
+  await page.waitForSelector('[data-testid="template-dialog"]', {state:'detached'});
+  await page.evaluate(() => { window.portalRef = window.fixture.portal('template'); });
+  await page.waitForSelector('[data-testid="template-portal"]');
+  await create('[data-testid="template-portal"]', 'OMP limited portal');
+  await page.evaluate(() => window.portalRef.dispose());
+  const single = await copyOMP(page, context, origin, ['Angular UI context check']);
+  assert.match(single, /CardComponent/);
+  assert.match(single, /conditional/);
+  assert.match(single, /match_scope: owner_host/);
+  assert.match(single, /match_count: 1/);
+  assert.doesNotMatch(single, /OMP same|private=query|#private|DO_NOT_COLLECT|@file/);
+  const copied = await copyOMP(page, context, origin);
+  if (process.env.OMP_CLIPBOARD_PATH) await writeFile(process.env.OMP_CLIPBOARD_PATH, copied);
+  const blocks = copied.split(/\n\n---\n\n/);
+  const block = comment => blocks.find(b => b.includes(`Change: ${comment}\n`));
+  assert.match(block('OMP component host'), /Template owner: .*AppComponent/);
+  assert.match(block('OMP component host'), /Hosted component: .*CardComponent/);
+  for (const [comment, host, test] of [['OMP same A','fixture-same-a','same-a'], ['OMP same B','fixture-same-b','same-b']]) {
+    const owner = JSON.parse(block(comment).match(/^Template owner: (.+)$/m)[1]);
+    assert.equal(owner.name, 'SameComponent');
+    assert.equal(owner.host.tag, host);
+    assert.match(block(comment), new RegExp(test));
+  }
+  assert.match(block('OMP component dialog'), /Template owner: .*DialogComponent/);
+  assert.match(block('OMP limited template dialog'), /Template owner: .*MatDialogContainer/);
+  assert.match(block('OMP limited template dialog'), /limitations/);
+  assert.doesNotMatch(block('OMP limited portal'), /Template owner:|AppComponent/);
+  assert.match(block('OMP limited portal'), /template-portal/);
+  // Search independently authored source declarations from copied keys, not
+  // from stored annotation metadata; resolve the actual template node.
+  const declarations = [];
+  for (const file of ['main.js', 'same-a.js', 'same-b.js', 'lazy.js']) {
+    const source = await readFile(join(here, file), 'utf8');
+    for (const match of source.matchAll(/Component\(\{([\s\S]*?)\}\)\((\w+)\);/g)) {
+      declarations.push({file, owner: match[2], metadata: match[1]});
+    }
+  }
+  for (const [comment, file, owner, node] of [
+    ['Angular UI context check','main.js','CardComponent','data-testid="conditional"'],
+    ['OMP component host','main.js','AppComponent','<fixture-card class="user-card">'],
+    ['OMP same A','same-a.js','SameComponent','data-testid="same-a"'],
+    ['OMP same B','same-b.js','SameComponent','data-testid="same-b"'],
+    ['OMP component dialog','main.js','DialogComponent','data-testid="dialog-action"'],
+    ['OMP limited template dialog','main.js','AppComponent','data-testid="template-dialog"'],
+    ['OMP limited portal','main.js','AppComponent','data-testid="template-portal"'],
+  ]) {
+    const pasted = block(comment);
+    const target = JSON.parse(pasted.match(/^Target: (.+)$/m)[1]);
+    const observedOwner = pasted.match(/^Template owner: (.+)$/m);
+    const observed = observedOwner ? JSON.parse(observedOwner[1]) : null;
+    const testId = target.attributes?.['data-testid'];
+    const needle = testId ? `data-testid="${testId}"` : `<${target.tag}`;
+    let found = declarations.filter(d => d.metadata.includes(needle));
+    if (observed?.name && observed.name !== 'MatDialogContainer') {
+      found = found.filter(d => d.owner === observed.name && (!observed.host?.tag || new RegExp(`selector:\\s*['"]${observed.host.tag}['"]`).test(d.metadata)));
+    }
+    assert.equal(found.length, 1, `${comment}: copied keys resolve one source declaration`);
+    assert.equal(found[0].file, file);
+    assert.equal(found[0].owner, owner);
+    assert.ok(found[0].metadata.includes(node), `${comment}: resolved template contains the exact selected node`);
+    console.log(`FOUND from OMP clipboard: ${comment} → ${found[0].file} / ${found[0].owner} / ${node}`);
+  }
+  assert.equal(await page.evaluate(() => window.inputReads), 0);
+  console.log('PASS: installed name/logo, single/multiple real Angular OMP clipboard and source template search');
+}
+
+async function verifyDOMCopy(page, context, origin) {
+  const text = await copyOMP(page, context, origin, [`DOM fallback UI ${new URL(page.url()).pathname === '/plain' ? '/plain' : '/production?production'}`]);
+  assert.match(text, /Target: .*button/);
+  assert.match(text, /no template owner is confirmed/);
+  assert.doesNotMatch(text, /Template owner:|Hosted component:|Observed owner chain:|@file/);
+  assert.ok(text.includes(new URL(page.url()).pathname));
+  console.log('PASS: real DOM/optimized JIT clipboard without invented Angular owner');
 }

@@ -1,5 +1,6 @@
 import LocalAttachments from './local-attachments.js';
 import { renderAnnotationsMarkdown, sanitizeAnnotationForExport } from './export-markdown.js';
+import { renderAnnotationsForOMP } from './export-omp.js';
 
 const textEncoder = new TextEncoder();
 function u16(v) { return new Uint8Array([v & 255, (v >>> 8) & 255]); }
@@ -80,12 +81,24 @@ function fieldRows(value, annotationId, path = '') {
       ? `<details open><summary>${label}</summary>${fieldRows(item, annotationId, pointer)}</details>` : label;
   }).join('');
 }
+function copyReviewAnnotation(annotation, excluded = new Set()) {
+  // Free-form old hints may contain input values. Retain only identifier-only
+  // component hints as unconfirmed search keys, never as a template owner.
+  const legacy = !annotation.element_context?.angular && !annotation.element_context?.target_identity
+    ? (annotation.context_hints || []).filter(h => /^(?:Angular component|Component): [A-Za-z_$][\w$]{2,119}$/.test(h))
+    : [];
+  const copy = sanitizeAnnotationForExport({ ...annotation, ...(legacy.length ? { legacy_search_hints: [...new Set(legacy)] } : {}) }, excluded);
+  if (annotation.element_context?.target_identity && copy.element_context && !copy.element_context.target_identity) {
+    for (const key of ['tag', 'classes', 'attributes']) delete copy.element_context[key];
+  }
+  return copy;
+}
 export function openExportReview(annotations, mode = 'zip') {
   return new Promise(resolve => {
     const root = document.createElement('div'); root.className = 'vibe-export-review';
     const previews = [];
     const rows = annotations.map(a => {
-      const fields = fieldRows(sanitizeAnnotationForExport(a), a.id);
+      const fields = fieldRows(mode === 'copy' ? copyReviewAnnotation(a) : sanitizeAnnotationForExport(a), a.id);
       const images = (a.attachments || []).map(att => {
         const index = previews.length;
         if (att.local_only) previews.push(att);
@@ -93,7 +106,7 @@ export function openExportReview(annotations, mode = 'zip') {
       }).join('');
       return `<section class="vibe-export-item"><label class="vibe-export-row"><input type="checkbox" data-id="${escapeAttr(a.id)}" checked><strong>${escapeHTML(a.comment || a.id)}</strong></label>${fields}${images}</section>`;
     }).join('');
-    root.innerHTML = `<div class="vibe-export-card" role="dialog" aria-label="Review export"><h2>Review export</h2><p>Every retained field is shown below, including existing DOM and Angular context. Uncheck sensitive fields, annotations, or images. URL query and fragment are removed from the copy. Exclusions never change originals.</p><div class="vibe-export-list">${rows}</div><div class="vibe-export-error" role="alert"></div><div class="vibe-export-actions"><button class="vibe-btn vibe-btn-secondary" type="button" data-action="cancel">Cancel</button><button class="vibe-btn vibe-btn-primary" type="button" data-action="continue" disabled>${mode === 'copy' ? 'Copy text (images require ZIP)' : 'Export ZIP'}</button></div></div>`;
+    root.innerHTML = `<div class="vibe-export-card" role="dialog" aria-label="Review export"><h2>Review export</h2><p>Every retained field is shown below, including existing DOM and Angular context. Uncheck sensitive fields, annotations, or images. URL query and fragment are removed from the copy. Exclusions never change originals.</p>${mode === 'copy' ? '<label>Copy format <select data-copy-format><option value="markdown">Markdown</option><option value="omp">Копировать для OMP</option></select></label>' : ''}<div class="vibe-export-list">${rows}</div><div class="vibe-export-error" role="alert"></div><div class="vibe-export-actions"><button class="vibe-btn vibe-btn-secondary" type="button" data-action="cancel">Cancel</button><button class="vibe-btn vibe-btn-primary" type="button" data-action="continue" disabled>${mode === 'copy' ? 'Copy text (images require ZIP)' : 'Export ZIP'}</button></div></div>`;
     const host = document.getElementById('vibe-annotations-root');
     (host?.shadowRoot || document.body).appendChild(root);
     const button = root.querySelector('[data-action="continue"]');
@@ -118,10 +131,17 @@ export function openExportReview(annotations, mode = 'zip') {
       for (const image of root.querySelectorAll('[data-image]:not(:checked)')) excluded.add(`${image.dataset.annotation}:image:${image.dataset.attachment}`);
       try {
         if (!selected.size) throw new Error('Select at least one annotation');
-        const result = await buildLocalExport(annotations, selected, excluded);
+        let result;
         if (mode === 'copy') {
-          const textOnly = result.json.annotations.map(a => ({ ...a, attachments: a.attachments.map(att => ({ id: att.id, kind: att.kind, unavailable: true, unavailable_reason: att.unavailable_reason || 'Copied text does not transfer image bytes; use ZIP export' })) }));
-          await navigator.clipboard.writeText(renderAnnotationsMarkdown(textOnly, window.location.host));
+          const textOnly = annotations.filter(a => selected.has(a.id)).map(a => ({
+            ...copyReviewAnnotation(a, excluded),
+            attachments: (a.attachments || []).filter(att => !excluded.has(`${a.id}:image:${att.id}`)).map(() => ({ unavailable: true, unavailable_reason: 'Copied text does not transfer image bytes; use ZIP export' })),
+          }));
+          const omp = root.querySelector('[data-copy-format]').value === 'omp';
+          await navigator.clipboard.writeText(omp ? renderAnnotationsForOMP(textOnly) : renderAnnotationsMarkdown(textOnly, window.location.host));
+          result = { json: { annotations: textOnly } };
+        } else {
+          result = await buildLocalExport(annotations, selected, excluded);
         }
         root.remove(); resolve({ ...result, selected, excluded });
       } catch (error) {

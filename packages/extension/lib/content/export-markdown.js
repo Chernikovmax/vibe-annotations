@@ -43,7 +43,7 @@ export function sanitizeAnnotationForExport(annotation, excluded = new Set()) {
   return compactExportArrays(copy);
 }
 export function renderAnnotationsMarkdown(annotations, host) {
-  let md = `# vibe-remarker — ${host} · ${annotations.length} annotation${annotations.length === 1 ? '' : 's'}\n\nFollow my instructions on these elements. When applying design changes, map values to the project design system (Tailwind classes, CSS variables, or design tokens).\n\n---\n\n`;
+  let md = `# ng-vibe-remarker — ${host} · ${annotations.length} annotation${annotations.length === 1 ? '' : 's'}\n\nFollow my instructions on these elements. When applying design changes, map values to the project design system (Tailwind classes, CSS variables, or design tokens).\n\n---\n\n`;
   [...annotations].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).forEach((a, i) => {
     const ec = a.element_context || {}, ng = ec.angular || null;
     md += `## ${i + 1}. ${a.comment || '_(no comment)_'}\n\n`;

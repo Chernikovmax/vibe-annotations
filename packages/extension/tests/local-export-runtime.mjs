@@ -77,12 +77,53 @@ try {
   assert.doesNotMatch(copied,/attachments\/|INPUT_VALUE_SECRET|DOM_SECRET|SENSITIVE/);
   assert.equal((await worker.evaluate(async () => (await chrome.storage.local.get('annotations')).annotations)).length,2,'legacy clearOnCopy must not delete export originals');
   console.log('PASS reviewed clipboard excludes context, does not claim image files, and never deletes originals');
+  await page.locator('.vibe-viewall-copy').click();
+  await page.locator('[data-copy-format]').selectOption('omp');
+  for (const path of ['/element_context/angular/template_owner', '/element_context/target_identity/attributes', '/element_context/text', '/element_context/id', '/element_context/aria_label', '/parent_chain']) await page.locator(`[data-field="export-fixture:${path}"]`).uncheck();
+  await page.locator('.vibe-export-review input[data-id="excluded-annotation"]').uncheck();
+  await page.locator('[data-action="continue"]').click();
+  await page.locator('.vibe-export-review').waitFor({state:'detached'});
+  const omp = await page.evaluate(() => navigator.clipboard.readText());
+  assert.match(omp, /no template owner is confirmed/);
+  assert.match(omp, /Copied text does not transfer image bytes/);
+  assert.doesNotMatch(omp, /Template owner:|data-testid|DOM_SECRET|ARIA_SECRET|PARENT_SECRET|SENSITIVE|PRIVATE_SOURCE|INPUT_VALUE_SECRET|EXCLUDED_ANNOTATION|blob:|attachments\/|\/FAKE\/|@file/);
+  assert.ok(!omp.includes(seeded.id), 'local attachment IDs are not presented as paths');
+  assert.deepEqual((await worker.evaluate(async () => (await chrome.storage.local.get('annotations')).annotations)),[seeded.annotation,seeded.other]);
+  console.log('PASS OMP review exclusions, no hint resurrection or false source/image links; originals intact');
+  await worker.evaluate(async annotation => {
+    await chrome.storage.local.set({annotations: [{
+      ...annotation, id:'legacy-note', comment:'Legacy note', attachments:[],
+      element_context:{tag:'button',text:'Legacy button'},
+      context_hints:['Angular component: LegacyComponent','inputs: INPUT_VALUE_SECRET', 'Source: /FAKE/legacy.ts'],
+    }]});
+  }, seeded.annotation);
+  for (const exclude of [false, true]) {
+    await page.locator('.vibe-viewall-copy').click();
+    await page.locator('[data-copy-format]').selectOption('omp');
+    if (exclude) await page.locator('[data-field="legacy-note:/legacy_search_hints"]').uncheck();
+    await page.locator('[data-action="continue"]').click();
+    await page.locator('.vibe-export-review').waitFor({state:'detached'});
+    const text = await page.evaluate(() => navigator.clipboard.readText());
+    assert.equal(text.includes('LegacyComponent'), !exclude);
+    assert.doesNotMatch(text, /Template owner:|INPUT_VALUE_SECRET|\/FAKE\//);
+  }
+  await worker.evaluate(async annotations => chrome.storage.local.set({annotations}), [seeded.annotation,seeded.other]);
+  console.log('PASS legacy identifier hints are reviewed fallback only, without inputs or invented owner');
   await worker.evaluate(async () => { const data = await chrome.storage.local.get('annotations'); data.annotations[0].attachments[0].id='missing-local-bytes'; await chrome.storage.local.set(data); });
   await exportButton.click(); await page.locator('.vibe-share-opt').click(); await page.locator('.vibe-export-review').waitFor();
   await page.locator('[data-action="continue"]').click();
   await page.locator('.vibe-export-error').filter({hasText:/unavailable/i}).waitFor();
   assert.equal(await page.locator('[data-action="continue"]').isVisible(),true,'missing bytes do not report export success');
   console.log('PASS missing local bytes produce visible hard error');
+  await page.locator('[data-action="cancel"]').click();
+  await page.locator('.vibe-viewall-copy').click();
+  await page.locator('[data-copy-format]').selectOption('omp');
+  await page.locator('[data-action="continue"]').click();
+  await page.locator('.vibe-export-review').waitFor({state:'detached'});
+  const missingImageText = await page.evaluate(() => navigator.clipboard.readText());
+  assert.match(missingImageText, /Copied text does not transfer image bytes/);
+  assert.doesNotMatch(missingImageText, /missing-local-bytes|blob:|attachments\//);
+  console.log('PASS missing image bytes do not block reviewed text-only OMP handoff');
 } finally {
   await browser?.close(); await new Promise(r => server.close(r)); await rm(profile,{recursive:true,force:true});
 }

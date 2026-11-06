@@ -14,7 +14,7 @@ export default defineConfig({
     keepProfileChanges: true,
   },
   manifest: {
-    name: 'vibe-remarker',
+    name: 'ng-vibe-remarker',
     description:
       'Visual annotations for localhost dev projects. Send feedback to AI coding agents like Claude & Cursor via MCP.',
     author: 'Raphael Regnier - Spellbind Creative Studio',
@@ -45,7 +45,7 @@ export default defineConfig({
       128: 'assets/icons/icon128.png',
     },
     action: {
-      default_title: 'vibe-remarker',
+      default_title: 'ng-vibe-remarker',
     },
     commands: {
       'toggle-annotate': {

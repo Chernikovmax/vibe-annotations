@@ -171,7 +171,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     toolbarEl.className = 'vibe-toolbar';
 
     toolbarEl.innerHTML = `
-      <img class="vibe-toolbar-logo" src="${logoUrl}" alt="vibe-remarker" title="vibe-remarker" />
+      <img class="vibe-toolbar-logo" src="${logoUrl}" alt="ng-vibe-remarker" title="ng-vibe-remarker" />
       <div class="vibe-toolbar-separator"></div>
       <div class="vibe-toolbar-middle">
         <div class="vibe-toolbar-default">
@@ -209,7 +209,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
       </div>
       ${isEmbeddedHost ? '' : `
       <div class="vibe-toolbar-separator"></div>
-      <button class="vibe-toolbar-close vibe-tb-close" title="Close vibe-remarker">
+      <button class="vibe-toolbar-close vibe-tb-close" title="Close ng-vibe-remarker">
         ${ICONS.close}
       </button>`}
     `;
@@ -1259,7 +1259,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
 
     // Validate envelope
     if (!data || data.vibe_annotations_export !== true || !Array.isArray(data.annotations)) {
-      showInfoModal('Invalid format', 'This file is not a vibe-remarker / Vibe Annotations export.');
+      showInfoModal('Invalid format', 'This file is not an ng-vibe-remarker / Vibe Annotations export.');
       return;
     }
 

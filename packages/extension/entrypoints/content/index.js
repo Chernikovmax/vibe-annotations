@@ -95,7 +95,7 @@ function showPermissionOverlay({ originPattern, hostname } = {}) {
   backdrop.innerHTML = `
     <div class="vibe-permission-modal">
       <img class="vibe-permission-logo" src="${logoUrl}" alt="">
-      <h2 class="vibe-permission-title">Enable Vibe Annotations?</h2>
+      <h2 class="vibe-permission-title">Enable ng-vibe-remarker?</h2>
       <p class="vibe-permission-body">Grant access to <strong>${escapeForModal(hostname || 'this site')}</strong> so the annotation toolbar can load here.</p>
       <div class="vibe-permission-actions">
         <button class="vibe-permission-btn vibe-permission-primary" data-scope="site" type="button">Enable on this site</button>

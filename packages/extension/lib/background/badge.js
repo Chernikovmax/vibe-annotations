@@ -15,7 +15,7 @@ export async function updateBadge(tabId, url) {
     if (pendingCount > 0) {
       await chrome.action.setBadgeText({ tabId, text: pendingCount.toString() });
       await chrome.action.setBadgeBackgroundColor({ tabId, color: '#D03D68' });
-      await chrome.action.setTitle({ tabId, title: `Vibe Annotations - ${pendingCount} pending annotation${pendingCount === 1 ? '' : 's'}` });
+      await chrome.action.setTitle({ tabId, title: `ng-vibe-remarker - ${pendingCount} pending annotation${pendingCount === 1 ? '' : 's'}` });
     } else {
       await clearBadge(tabId);
     }
@@ -27,7 +27,7 @@ export async function updateBadge(tabId, url) {
 export async function clearBadge(tabId) {
   try {
     await chrome.action.setBadgeText({ tabId, text: '' });
-    await chrome.action.setTitle({ tabId, title: 'Vibe Annotations' });
+    await chrome.action.setTitle({ tabId, title: 'ng-vibe-remarker' });
   } catch (error) {
     console.error('Error clearing badge:', error);
   }

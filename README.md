@@ -1,8 +1,14 @@
-# Vibe Annotations
+# ng-vibe-remarker
 
 [![Chrome Web Store](https://img.shields.io/badge/Chrome_Web_Store-6K+_users-green?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/gkofobaeeepjopdpahbicefmljcmpeof) [![Server Package](https://img.shields.io/badge/Server-NPM-blue)](https://www.npmjs.com/package/vibe-annotations-server) [![License: PolyForm Shield](https://img.shields.io/badge/License-PolyForm%20Shield-blue)](https://polyformproject.org/licenses/shield/1.0.0)
 
 Visual feedback tool for web development. Annotate elements on your pages, make design tweaks, and share with AI coding agents or teammates.
+
+This checkout builds **ng-vibe-remarker**, a local Angular-aware extension derived
+from Vibe Annotations. The Web Store, server/plugin packages and upstream docs linked
+below still refer to the upstream product, not a published release of this fork.
+Build with `pnpm --filter vibe-annotations-extension build` and load
+`packages/extension/.output/chrome-mv3` as an unpacked extension in Chrome.
 
 https://github.com/user-attachments/assets/6946733e-eea6-4d38-8386-c493f90d36f4
 
@@ -72,6 +78,47 @@ interaction isolation are implemented. The stage-5 integration evidence and rema
 acceptance limits are recorded below; this is not a release or a compatibility claim
 for untested versions.
 
+### Copy for OMP (manual text handoff)
+
+In **View all → Copy**, choose **Копировать для OMP** in **Copy format**.
+Review the fields/images, deselect sensitive fields or entire annotations, then
+**Copy text** and paste into the OMP session you choose. The existing Markdown
+option remains available. No session discovery, delivery API, MCP or native host
+is involved; copying reads local annotations and does not delete originals.
+
+Each separated note starts with the requested change and URL without query/hash,
+then observed template owner/host, independent hosted component, target test
+attributes/classes and locator with actual scope/count or its unavailable reason.
+Observed chain/status/stop reason/limitations precede clearly labeled search
+guidance; additional reviewed DOM context follows. Structure wins over hints.
+For old records without structured Angular/target context, only identifier-only
+component hints are retained as reviewed, **unconfirmed** search keys; free-form
+legacy hints that might contain input values are omitted. Excluded owners/targets
+are not reconstructed from hints or duplicate DOM identity fields.
+
+Names can repeat; host tags are not proof of Angular selectors. Limited
+TemplateRef/portal ownership remains limited, not an inferred declaration owner.
+No source paths, `@file` references or line numbers are generated. With no Angular
+discovery API, use the retained DOM keys.
+
+Text never transfers images: retained attachments produce a ZIP-transfer reminder,
+not blob URLs, local IDs as paths or fake image links. **Share / Export → ZIP**
+remains the separate image-transfer path; copying does not require image bytes to
+be exportable. The ZIP schema and attachment lifecycle are unchanged.
+
+Stage-6 checks passed on installed unpacked builds with Angular 17.3.12/CDK 17.3.10
+and Angular 20.0.0/CDK 20.0.4: single/multiple selected notes, actual clipboard reads,
+review exclusions, clean URLs, no invented image/source links, and DOM-only/optimized
+JIT fallback. Copied owner/host/target keys resolved the exact fixture declarations
+and template nodes for ordinary elements, component hosts, same-name classes,
+Component dialog and limited TemplateRef/portal cases. The actual clipboard text
+was also read in the current OMP session via a temporary local artifact and matched
+against those sources; this is not automatic session delivery or a speed benchmark.
+`chrome://extensions`, runtime manifest and the loaded toolbar logo confirmed the
+installed **ng-vibe-remarker** name. Run the Angular runner above and
+`node packages/extension/tests/local-export-runtime.mjs` to reproduce browser checks.
+No screenshot permissions were requested; the stage-5 screenshot blocker remains open.
+
 ### Manual local screenshots
 
 The annotation card's **+** menu captures the selected element or a dragged viewport
@@ -138,9 +185,10 @@ Selection guards follow the selecting pointer ID through release/click, not a
 400–700 ms click blackout. Long holds remain owned; the next pointerdown is
 independent. Only a missing post-release click needs a 1500 ms cleanup watchdog.
 
-The unpacked extension is named **vibe-remarker** and uses `logo.png` for its
-generated 16/32/48/128 px icons and toolbar artwork. The package/server names
-and existing storage format are unchanged.
+The unpacked extension is named **ng-vibe-remarker** and uses the unchanged `logo.png`
+for its generated 16/32/48/128 px icons and toolbar artwork. The checkout folder,
+GitHub remotes, package/server/protocol names, storage keys, IndexedDB name and local
+attachment IDs are unchanged; this is visible branding, not a data migration.
 
 ### Modal UI compatibility
 
