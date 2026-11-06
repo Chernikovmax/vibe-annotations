@@ -430,22 +430,18 @@
         content: `
           <div class="vibe-guide-section">
             <div class="vibe-guide-label">Every pin can carry images</div>
-            <p class="vibe-guide-text">An automatic screenshot of the element you pinned, plus any reference images you attach. Your agent receives both as real image files.</p>
+            <p class="vibe-guide-text">Screenshots are captured only when you explicitly request one. They remain in this browser and are not sent to the server or MCP.</p>
           </div>
           <div class="vibe-guide-section">
             <div class="vibe-guide-label">Two kinds of image</div>
-            <p class="vibe-guide-text"><strong>Auto-screenshot</strong> — a zoned capture of exactly the element you annotated, so the agent sees its <em>current</em> visual state.</p>
-            <p class="vibe-guide-text"><strong>Reference image</strong> — anything you attach or paste, usually a <em>target</em> ("make it look like this"). The agent is told which is which.</p>
+            <p class="vibe-guide-text"><strong>Local screenshot</strong> — a user-requested capture saved in this browser.</p>
+            <p class="vibe-guide-text"><strong>Reference image</strong> — an image you attach or paste. The agent can receive server-stored attachments.</p>
           </div>
           <div class="vibe-guide-section">
             <div class="vibe-guide-label">Workflow</div>
             <p class="vibe-guide-text">1. Open the popover on the element you want to annotate</p>
             <p class="vibe-guide-text">2. Use the <strong>+</strong> menu to <em>Attach file</em> or <em>Take a screenshot</em>, or paste an image straight into the comment field</p>
-            <p class="vibe-guide-text">3. Save — images travel with the annotation to your agent (as local file paths over MCP) and into <code>.md</code> / <code>.html</code> exports</p>
-          </div>
-          <div class="vibe-guide-section">
-            <div class="vibe-guide-label">Enabling auto-screenshots</div>
-            <p class="vibe-guide-text">Auto-capture is <strong>off by default</strong>. Turn it on in the toolbar settings — the extension requests the screenshot permission the first time, since capturing the tab needs broader host access than annotating alone.</p>
+            <p class="vibe-guide-text">3. Save — local screenshots stay in this browser; they are not sent to your agent through MCP.</p>
           </div>
           <div class="vibe-guide-section">
             <div class="vibe-guide-label">Tips</div>

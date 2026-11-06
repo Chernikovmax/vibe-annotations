@@ -18,6 +18,14 @@ function attachmentPath(annotationId, att) {
   return `~/.vibe-annotations/attachments/${annotationId}__${att.id}.${ext}`;
 }
 
+// `app-user-card.card#main` — the shape a developer greps for in templates.
+function angularHostToken(host) {
+  if (!host || !host.tag) return null;
+  return host.tag
+    + (host.id ? `#${host.id}` : '')
+    + (host.classes || []).map(c => `.${c}`).join('');
+}
+
 export function renderAnnotationsMarkdown(annotations, host) {
   const count = annotations.length;
   let md = `# Vibe Annotations — ${host} · ${count} annotation${count === 1 ? '' : 's'}\n\n`;
@@ -34,10 +42,24 @@ export function renderAnnotationsMarkdown(annotations, host) {
     }
 
     const ec = a.element_context || {};
-    const componentHint = (a.context_hints || []).find(h => typeof h === 'string' && h.startsWith('Component:'));
+    const ng = ec.angular || null;
+    const hints = Array.isArray(a.context_hints) ? a.context_hints : [];
+    const pickHint = (prefix) => {
+      const h = hints.find(x => typeof x === 'string' && x.startsWith(prefix));
+      return h ? h.slice(prefix.length).trim() : null;
+    };
+    // React/Vue report `Component:` hints; Angular reports the class on
+    // element_context.angular. Either way the agent needs one name to grep for.
+    const component = (ng && ng.component) || pickHint('Component:') || pickHint('Angular component:');
+    const componentPath = pickHint('Angular component path:') || pickHint('Component path:');
+    const angularHost = ng ? angularHostToken(ng.host) : null;
 
     md += `## ${i + 1}. ${a.comment || '_(no comment)_'}\n\n`;
-    if (componentHint) md += `- **Component:** \`${componentHint.replace('Component:', '').trim()}\`\n`;
+    if (component) md += `- **Component:** \`${component}\`\n`;
+    if (componentPath) md += `- **Component path:** ${componentPath.split(' > ').map(c => `\`${c}\``).join(' > ')}\n`;
+    if (angularHost) md += `- **Angular host:** \`${angularHost}\`\n`;
+    if (ng && ng.directives && ng.directives.length) md += `- **Angular directives:** ${ng.directives.map(d => `\`${d}\``).join(', ')}\n`;
+    if (ng && ng.inputs) md += `- **Angular inputs:** ${Object.entries(ng.inputs).map(([k, v]) => `\`${k}=${typeof v === 'string' ? JSON.stringify(v) : v}\``).join(', ')}\n`;
     if (a.source_file_path) md += `- **Source:** \`${a.source_file_path}${a.source_line_range ? ` (lines ${a.source_line_range})` : ''}\`\n`;
     if (a.url_path) md += `- **Page:** ${a.url_path}\n`;
     // A data-vibe-id is injected live by the extension (not in the source) — swap it

@@ -11,6 +11,41 @@ let connected = false;
 let lastStatus = null;
 let lastStatusTime = 0;
 
+function withoutLocalAttachments(annotation) {
+  if (!Array.isArray(annotation?.attachments)) return annotation;
+  return {
+    ...annotation,
+    attachments: annotation.attachments.filter(attachment => !attachment?.local_only),
+  };
+}
+
+function preserveLocalAttachments(annotation, localAnnotation) {
+  const localAttachments = (localAnnotation?.attachments || []).filter(attachment => attachment?.local_only);
+  if (!localAttachments.length) return annotation;
+  const localById = new Map(localAttachments.map(attachment => [attachment.id, attachment]));
+  const mergedAttachments = (annotation.attachments || []).map(attachment => localById.get(attachment.id) || attachment);
+  const serverIds = new Set(mergedAttachments.map(attachment => attachment.id));
+  for (const attachment of localAttachments) {
+    if (!serverIds.has(attachment.id)) mergedAttachments.push(attachment);
+  }
+  return { ...annotation, attachments: mergedAttachments };
+}
+
+function mergeServerAnnotations(serverAnnotations, localAnnotations, url) {
+  const localById = new Map((localAnnotations || []).map(annotation => [annotation.id, annotation]));
+  const serverIds = new Set(serverAnnotations.map(annotation => annotation.id));
+  const merged = serverAnnotations.map(annotation => preserveLocalAttachments(annotation, localById.get(annotation.id)));
+  for (const annotation of localAnnotations || []) {
+    if (serverIds.has(annotation.id) || (url && annotation.url !== url)) continue;
+    if ((annotation.attachments || []).some(attachment => attachment?.local_only)) merged.push(annotation);
+  }
+  return merged;
+}
+
+function withoutLocalAttachmentsForSync(annotations) {
+  return annotations.map(withoutLocalAttachments);
+}
+
 export function isConnected() { return connected; }
 
 // Cached connection status, or null if we have nothing newer than maxAgeMs.
@@ -63,8 +98,9 @@ async function probeConnection() {
 
 export async function syncAll(annotations) {
   try {
+    const publicAnnotations = withoutLocalAttachmentsForSync(annotations);
     const response = await fetch(`${API_URL}/api/annotations/sync`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ annotations })
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ annotations: publicAnnotations })
     });
     if (!response.ok) throw new Error(`API sync error: ${response.status}`);
     const result = await response.json();
@@ -82,7 +118,7 @@ export async function saveOne(annotation) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
     const response = await fetch(`${API_URL}/api/annotations`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(annotation), signal: controller.signal
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(withoutLocalAttachments(annotation)), signal: controller.signal
     });
     clearTimeout(timeout);
     if (!response.ok) throw new Error(`API server error: ${response.status}`);
@@ -95,7 +131,7 @@ export async function saveOne(annotation) {
 }
 
 // Upload an image attachment as a raw binary blob (no base64). kind is 'capture'
-// (the auto element screenshot) or 'user' (paste/upload). The server writes it to
+// (a user-requested screenshot) or 'user' (paste/upload). The server writes it to
 // ~/.vibe-annotations/attachments/ and records { id, kind, mime } on the annotation.
 // Retries on 404: for a brand-new annotation the attachment can race ahead of the
 // server-side create (saveOne is fire-and-forget), so the annotation may not exist
@@ -162,12 +198,14 @@ export async function smartSync(storageLockFn) {
         const local = localMap.get(id);
         const server = serverMap.get(id);
         if (local && server) {
+          const mergedServer = preserveLocalAttachments(server, local);
           const lt = new Date(local.updated_at || local.created_at || 0).getTime();
           const st = new Date(server.updated_at || server.created_at || 0).getTime();
-          if (st > lt) { server._synced = true; merged.push(server); changed = true; }
+          if (st > lt) { mergedServer._synced = true; merged.push(mergedServer); changed = true; }
           else { if (!local._synced) flagsChanged = true; local._synced = true; merged.push(local); if (lt > st) changed = true; }
         } else if (local && !server) {
-          if (local._synced) { changed = true; } else { merged.push(local); changed = true; }
+          if (local._synced && !(local.attachments || []).some(attachment => attachment?.local_only)) { changed = true; }
+          else { merged.push(local); changed = true; }
         } else if (!local && server) { server._synced = true; merged.push(server); changed = true; }
       }
 
@@ -176,7 +214,7 @@ export async function smartSync(storageLockFn) {
 
       if (changed) {
         try {
-          await fetch(`${API_URL}/api/annotations/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ annotations: merged }) });
+          await fetch(`${API_URL}/api/annotations/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ annotations: withoutLocalAttachmentsForSync(merged) }) });
           let needsUpdate = false;
           for (const a of merged) { if (!a._synced) { a._synced = true; needsUpdate = true; } }
           if (needsUpdate) await chrome.storage.local.set({ annotations: merged });
@@ -239,7 +277,8 @@ export async function fetchAnnotations(url) {
     const response = await fetch(apiUrl);
     if (!response.ok) throw new Error(`API server error: ${response.status}`);
     const result = await response.json();
-    return result.annotations || [];
+    const localResult = await chrome.storage.local.get(['annotations']);
+    return mergeServerAnnotations(result.annotations || [], localResult.annotations || [], url);
   } catch (error) {
     console.error('[Background] Error getting annotations from API:', error);
     const result = await chrome.storage.local.get(['annotations']);

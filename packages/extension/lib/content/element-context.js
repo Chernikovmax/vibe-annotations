@@ -73,6 +73,13 @@ import { vibeLocationPath } from './event-bus.js';
       screenshot: null,
       parent_chain: getParentChainContext(element, 4)
     };
+    context.target_identity = context.source_mapping.target_identity || {
+      tag: context.tag,
+      classes: classes.filter(c => c.length <= 120).slice(0, 6),
+      attributes: Object.fromEntries(['data-testid', 'data-test', 'data-cy', 'data-component', 'role', 'type']
+        .filter(name => element.hasAttribute(name))
+        .map(name => [name, element.getAttribute(name).slice(0, 120)])),
+    };
 
     // Real screenshots are captured asynchronously after save (see screenshot.js) —
     // a cropped chrome.tabs.captureVisibleTab, not a synthetic canvas. Left null here.
@@ -368,7 +375,8 @@ import { vibeLocationPath } from './event-bus.js';
     try {
       const srcInfo = await extractSourceInfo(element);
       const projectArea = getProjectAreaFromURL();
-      const urlPath = vibeLocationPath(window.location);
+      // Do not change annotation.url or legacy non-Angular route addressing.
+      const urlPath = srcInfo.angular ? window.location.pathname : vibeLocationPath(window.location);
       const hints = withIdentityHints(generateContextHints(element), srcInfo);
       return {
         source_file_path: srcInfo.filePath || null,
@@ -376,6 +384,9 @@ import { vibeLocationPath } from './event-bus.js';
         project_area: projectArea,
         url_path: urlPath,
         source_map_available: srcInfo.hasSourceMap || false,
+        framework: srcInfo.angular ? 'angular' : null,
+        angular: srcInfo.angular || null,
+        target_identity: srcInfo.target_identity || null,
         context_hints: hints
       };
     } catch {
@@ -385,13 +396,18 @@ import { vibeLocationPath } from './event-bus.js';
         project_area: 'unknown',
         url_path: vibeLocationPath(window.location),
         source_map_available: false,
+        framework: null,
+        angular: null,
         context_hints: generateContextHints(element)
       };
     }
   }
 
   async function extractSourceInfo(element) {
-    const empty = { filePath: null, lineRange: null, hasSourceMap: false, componentName: null, ownerChain: null };
+    const empty = {
+      filePath: null, lineRange: null, hasSourceMap: false,
+      componentName: null, ownerChain: null, framework: null, angular: null
+    };
 
     // Primary: ask the MAIN world to read the framework fiber/instance.
     // (Page-set expandos like __reactFiber$… are invisible in the isolated world.)
@@ -403,7 +419,10 @@ import { vibeLocationPath } from './event-bus.js';
           lineRange: main.lineRange || null,
           hasSourceMap: !!main.hasSourceMap,
           componentName: main.componentName || null,
-          ownerChain: main.ownerChain || null
+          ownerChain: main.ownerChain || null,
+          framework: main.angular ? 'angular' : null,
+          angular: main.angular || null,
+          target_identity: main.target_identity || null,
         };
       }
     } catch { /* continue to backstop */ }
@@ -462,10 +481,44 @@ import { vibeLocationPath } from './event-bus.js';
   // Append component identity from the MAIN-world read onto the DOM-derived hints.
   function withIdentityHints(baseHints, srcInfo) {
     const hints = Array.isArray(baseHints) ? baseHints.slice() : [];
+    const ng = srcInfo?.angular;
+    if (ng) {
+      // Names/hosts are search clues, never a recovered source path or selector.
+      for (let i = hints.length - 1; i >= 0; i--) {
+        if (/^Nested .*component hierarchy$|^React test ID:/.test(hints[i])) hints.splice(i, 1);
+      }
+      if (ng.component) hints.unshift(`Angular component: ${ng.component}`);
+      for (const [label, identity] of [['template owner (debug API)', ng.template_owner], ['hosted component', ng.hosted_component]]) {
+        if (!identity) continue;
+        hints.push(`Angular ${label}: ${identity.name || '(unknown name)'}; host: ${angularHostSelector(identity.host) || '(unavailable)'}`);
+      }
+      if (ng.chain) {
+        hints.push(`Angular observed owner chain: ${ng.chain.components.map(n => n || '(unknown)').join(' > ') || '(none)'}; stop: ${ng.chain.stop_reason}`);
+        if (ng.chain.unnamed_count) hints.push(`Angular chain unnamed instances: ${ng.chain.unnamed_count}`);
+        for (const limitation of ng.chain.limitations || []) hints.push(`Angular limitation: ${limitation}`);
+      }
+      const target = srcInfo.target_identity;
+      if (target?.relative_selector) hints.push(`Angular target locator: ${target.relative_selector}; matches: ${target.match_count}; scope: ${target.match_scope}`);
+      else if (target?.relative_selector_reason) hints.push(`Angular target locator unavailable: ${target.relative_selector_reason}; use the DOM selector/path`);
+      if (ng.api_issues?.length) hints.push(`Angular debug API issues: ${ng.api_issues.map(i => `${i.api}: ${i.reason}`).join(', ')}`);
+      if (ng.directives?.length) hints.push(`Angular directives: ${ng.directives.join(', ')}`);
+      if (ng.input_names?.length) hints.push(`Angular input names (no values): ${ng.input_names.join(', ')}`);
+      if (ng.change_detection) hints.push(`Change detection: ${ng.change_detection}`);
+      if (ng.version) hints.push(`Angular ${ng.version}; source: ${ng.version_source}`);
+      return hints.length ? hints : null;
+    }
     if (srcInfo?.componentName) hints.unshift(`Component: ${srcInfo.componentName}`);
     if (srcInfo?.ownerChain?.length) hints.push(`Component path: ${srcInfo.ownerChain.join(' > ')}`);
     return hints.length ? hints : null;
   }
+
+  // `app-user-card.card#main` — the shape a developer greps for in templates.
+  function angularHostSelector(host) {
+    if (!host?.tag) return null;
+    return host.tag
+      + (host.classes || []).map(c => `.${CSS.escape(c)}`).join('');
+  }
+
 
   function getDataAttributeInfo(element) {
     let current = element;

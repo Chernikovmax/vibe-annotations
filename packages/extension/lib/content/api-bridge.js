@@ -122,13 +122,6 @@ function isServerOutdated(version) {
     return r.count || 0;
   }
 
-  // Ask the background to capture+crop+store a real screenshot for this annotation.
-  // `crop` is a device-pixel rect { sx, sy, sw, sh } within the visible viewport.
-  async function captureScreenshot(id, crop) {
-    const r = await chrome.runtime.sendMessage({ action: 'captureAnnotationScreenshot', id, crop });
-    if (!r || !r.success) throw new Error(r?.error || 'screenshot capture failed');
-    return r;
-  }
 
   // --- Image attachments ---
 
@@ -167,13 +160,6 @@ function isServerOutdated(version) {
     return r.attachment;
   }
 
-  // Grab the full visible tab as a PNG data URL (the caller crops it). Needs the
-  // screenshot host permission — request it first via requestScreenshotPermission.
-  async function captureVisibleTab() {
-    const r = await chrome.runtime.sendMessage({ action: 'captureVisibleTab' });
-    if (!r || !r.success) throw new Error(r?.error || 'capture failed');
-    return r.dataUrl;
-  }
 
   async function removeAttachment(annotationId, attId) {
     const r = await chrome.runtime.sendMessage({ action: 'removeAttachment', id: annotationId, attId });
@@ -202,37 +188,14 @@ function isServerOutdated(version) {
 
   // --- Settings ---
 
-  let _screenshotEnabledCache = false; // default OFF (needs all-sites permission for captureVisibleTab)
 
-  async function getScreenshotEnabled() {
-    try {
-      const r = await chrome.storage.local.get(['screenshotEnabled']);
-      _screenshotEnabledCache = r.screenshotEnabled !== undefined ? r.screenshotEnabled : false;
-      return _screenshotEnabledCache;
-    } catch {
-      return false;
-    }
-  }
-
-  // Screenshots require chrome.tabs.captureVisibleTab, which needs the broad
-  // host permission (activeTab is gesture-scoped + revoked on navigation, and the
-  // localhost host permission doesn't satisfy it). Request it when the user turns
-  // screenshots on. Returns true if granted (or already held).
+  // Request the broad host permission required by manual screenshot capture.
+  // Returns true if granted (or already held).
   async function requestScreenshotPermission() {
     const r = await chrome.runtime.sendMessage({ action: 'requestScreenshotPermission' });
     return !!(r && r.success && r.granted);
   }
 
-  function isScreenshotEnabled() {
-    return _screenshotEnabledCache;
-  }
-
-  async function saveScreenshotEnabled(enabled) {
-    _screenshotEnabledCache = enabled;
-    try {
-      await chrome.storage.local.set({ screenshotEnabled: enabled });
-    } catch { /* ignore */ }
-  }
 
   async function getToolbarPosition() {
     try {
@@ -424,15 +387,10 @@ const VibeAPI = {
   forceSync,
   deleteAnnotation,
   deleteAnnotationsByUrl,
-  captureScreenshot,
-  captureVisibleTab,
   attachmentUrl,
   uploadUserImage,
   removeAttachment,
   onAnnotationsChanged,
-  getScreenshotEnabled,
-  isScreenshotEnabled,
-  saveScreenshotEnabled,
   requestScreenshotPermission,
   getToolbarPosition,
   saveToolbarPosition,

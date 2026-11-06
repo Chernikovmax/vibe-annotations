@@ -6,7 +6,9 @@ import VibeElementContext from './element-context.js';
 import VibeEvents, { vibeLocationPath } from './event-bus.js';
 import VibeInspectionMode from './inspection-mode.js';
 import VibePopoverPanels from './popover-panels.js';
+import VibeRegionCapture from './region-capture.js';
 import VibeShadowHost from './shadow-host.js';
+import LocalAttachments from './local-attachments.js';
 import { variantContext, currentVariant, variantElement, previewVariant, chooseVariant } from './variants.js';
 
   let currentPopover = null;
@@ -21,7 +23,7 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
   let activeTextDirty = false;
   let activeOriginalCssText = null;
   let activeCssRulesStyleEl = null;
-  let activePendingAttachments = null;
+  let activeAttachmentSession = null;
 
   const P = VibePopoverPanels; // shorthand
 
@@ -32,6 +34,7 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
   const VIBE_PLUS_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>';
   const VIBE_PAPERCLIP_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
   const VIBE_CAMERA_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>';
+  const VIBE_CROP_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>';
   const VIBE_VARIANTS_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>';
   const VIBE_COMMENT_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
   const VIBE_DESIGN_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3"/><path d="M16 4h3a1 1 0 0 1 1 1v3"/><path d="M4 16v3a1 1 0 0 1 1 1h3"/><path d="M12 12l7.5 3-3.2 1.1-1.1 3.2z"/></svg>';
@@ -70,7 +73,7 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
   // --- Show popover ---
 
   async function show(targetElement, context, existingAnnotation, clickX, clickY) {
-    dismiss();
+    if (await dismiss() === false) return;
 
     const root = VibeShadowHost.getRoot();
     if (!root) return;
@@ -195,7 +198,8 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
           </span>
           <div class="vibe-add-menu" hidden>
             <button class="vibe-add-opt" data-add="file" type="button">${VIBE_PAPERCLIP_ICON}<span>Attach file</span></button>
-            <button class="vibe-add-opt" data-add="shot" type="button">${VIBE_CAMERA_ICON}<span>Take a screenshot</span></button>
+            <button class="vibe-add-opt" data-add="shot" type="button">${VIBE_CAMERA_ICON}<span>Screenshot this element</span></button>
+            <button class="vibe-add-opt" data-add="region" type="button">${VIBE_CROP_ICON}<span>Screenshot a region…</span></button>
           </div>
         </div>
         <p class="vibe-variants-explain" hidden>Your agent builds these in your codebase, you'll preview and pick your favorite right here.</p>
@@ -281,21 +285,62 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
     const attachInput = popover.querySelector('.vibe-attach-input');
     const attachmentsEl = popover.querySelector('.vibe-attachments');
     const isLocal = VibeAPI.isLocalOrigin();
-    // For a not-yet-saved annotation we buffer blobs and upload them on save.
-    const pendingAttachments = []; // { blob, mime, url }
-    // Object URLs for images added this session, keyed by server attachment id —
-    // lets us show a real thumbnail even on https (where we couldn't re-fetch).
+    // Stable for the entire editing session, including failed Save retries.
+    const draftId = 'draft_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    const annotationId = existingAnnotation?.id || 'vibe_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    const pendingAttachments = []; // Legacy user-picked images only.
     const sessionBlobUrls = new Map();
-    // Track attachment add/remove so the save button reflects it (see updateSave).
+    let localAttachments = (existingAnnotation?.attachments || []).filter(a => a.local_only);
+    const legacyAttachments = (existingAnnotation?.attachments || []).filter(a => !a.local_only);
     let attachmentsDirty = false;
+    let capturing = false;
+    let attachmentTask = Promise.resolve();
+    let closing = false;
+    const statusEl = document.createElement('p');
+    statusEl.className = 'vibe-attachment-status';
+    statusEl.setAttribute('role', 'status');
+    attachmentsEl.after(statusEl);
+    const notice = document.createElement('p');
+    notice.className = 'vibe-attachments-notice';
+    notice.textContent = 'Screenshots stay in this browser, not MCP. Clearing extension data removes them. Save images from preview before clearing data; ZIP export is not available yet.';
+    statusEl.after(notice);
+    const showAttachmentError = err => {
+      const message = err.message || String(err);
+      statusEl.textContent = /quota|limit|MiB/i.test(message)
+        ? message + ' Delete unneeded local images in Settings or remove attachments, then try again.'
+        : message;
+    };
     const markAttachmentsChanged = () => { attachmentsDirty = true; popover._updateSave?.(); };
-
+    const session = {
+      close(saved) {
+        if (session.closePromise) return session.closePromise;
+        session.closePromise = session.finish(saved).finally(() => { session.closePromise = null; });
+        return session.closePromise;
+      },
+      async finish(saved) {
+        if (saving) return false;
+        closing = true;
+        VibeRegionCapture.cancel();
+        await attachmentTask;
+        try {
+          await LocalAttachments.discard(draftId);
+        } catch (err) {
+          closing = false;
+          showAttachmentError(err);
+          popover._updateSave?.();
+          return false;
+        }
+        for (const url of sessionBlobUrls.values()) URL.revokeObjectURL(url);
+        for (const item of pendingAttachments) URL.revokeObjectURL(item.url);
+        return true;
+      },
+    };
+    activeAttachmentSession = session;
+    let saving = false;
     function renderAttachments() {
-      const saved = (isEdit && Array.isArray(activeExistingAnnotation?.attachments)) ? activeExistingAnnotation.attachments : [];
       const tiles = [];
-      saved.forEach(att => {
-        const blobUrl = sessionBlobUrls.get(att.id);
-        const src = blobUrl || (isLocal ? VibeAPI.attachmentUrl(activeExistingAnnotation.id, att.id) : null);
+      [...legacyAttachments, ...localAttachments].forEach(att => {
+        const src = sessionBlobUrls.get(att.id) || (!att.local_only && isLocal ? VibeAPI.attachmentUrl(annotationId, att.id) : null);
         tiles.push(attachmentTileHTML({ src, attId: att.id, kind: att.kind }));
       });
       pendingAttachments.forEach((p, i) => tiles.push(attachmentTileHTML({ src: p.url, pendingIndex: i, kind: p.kind || 'user' })));
@@ -316,24 +361,10 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
     }
 
     async function handleAttach(blob, mime, kind = 'user') {
-      if (!blob || !ATTACH_MIMES.has(mime)) return;
-      if (isEdit && activeExistingAnnotation?.id) {
-        try {
-          const att = await VibeAPI.uploadUserImage(activeExistingAnnotation.id, blob, mime, kind);
-          sessionBlobUrls.set(att.id, URL.createObjectURL(blob));
-          const cur = activeExistingAnnotation.attachments || [];
-          // A capture is singular (server replaces the prior one) — mirror that locally.
-          activeExistingAnnotation.attachments = kind === 'capture'
-            ? [att, ...cur.filter(a => a.kind !== 'capture')]
-            : [...cur, att];
-          renderAttachments();
-          markAttachmentsChanged();
-        } catch (err) { console.warn('[Vibe] attach failed:', err); }
-      } else {
-        pendingAttachments.push({ blob, mime, kind, url: URL.createObjectURL(blob) });
-        renderAttachments();
-        markAttachmentsChanged();
-      }
+      if (!blob || !ATTACH_MIMES.has(mime) || capturing || closing || saving) return;
+      pendingAttachments.push({ blob, mime, kind, url: URL.createObjectURL(blob) });
+      renderAttachments();
+      markAttachmentsChanged();
     }
 
     // "+" menu: Attach file / Take a screenshot. The "+" rotates into an "×" open.
@@ -348,6 +379,7 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
     });
     addMenu.querySelector('[data-add="file"]').addEventListener('click', () => { closeAddMenu(); attachInput.click(); });
     addMenu.querySelector('[data-add="shot"]').addEventListener('click', () => { closeAddMenu(); takeScreenshot(); });
+    addMenu.querySelector('[data-add="region"]').addEventListener('click', () => { closeAddMenu(); takeRegionScreenshot(); });
     // Close on any click inside the popover that isn't the button/menu. Scoped to the
     // popover so the listener is GC'd with it (no cross-open leak); clicks outside the
     // popover dismiss it entirely anyway.
@@ -360,55 +392,74 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
       attachInput.value = '';
     });
 
-    // Take a screenshot of the annotated element: request the capture permission
-    // (a natural discovery moment), hide our overlay for the shot so the popover
-    // isn't in it, grab the element's region, and attach it as a capture. Works even
-    // when the Screenshots setting is off.
-    let capturing = false;
-    async function takeScreenshot() {
-      if (capturing) return;
-      capturing = true;
+    // Capture/crop/Blob persistence all run in the extension worker.
+    async function captureCssRegion(box, captureMode) {
+      const dpr = window.devicePixelRatio || 1; // Prototype geometry; stage 3 replaces this.
+      const crop = {
+        sx: Math.round(box.left * dpr), sy: Math.round(box.top * dpr),
+        sw: Math.round(box.width * dpr), sh: Math.round(box.height * dpr),
+      };
+      if (crop.sw <= 0 || crop.sh <= 0) throw new Error('The selected element is outside the visible page.');
+      const host = VibeShadowHost.getHost();
+      const visibility = host?.style.visibility;
       try {
-        const granted = await VibeAPI.requestScreenshotPermission();
-        if (!granted) return;
-        const r = targetElement.getBoundingClientRect();
-        const PAD = 16;
-        const left = Math.max(0, r.left - PAD);
-        const top = Math.max(0, r.top - PAD);
-        const right = Math.min(window.innerWidth, r.right + PAD);
-        const bottom = Math.min(window.innerHeight, r.bottom + PAD);
-        const cw = right - left, ch = bottom - top;
-        if (cw <= 0 || ch <= 0) return;
-        const dpr = window.devicePixelRatio || 1;
-        const crop = { sx: Math.round(left * dpr), sy: Math.round(top * dpr), sw: Math.round(cw * dpr), sh: Math.round(ch * dpr) };
-
-        const host = VibeShadowHost.getHost();
         if (host) host.style.visibility = 'hidden';
-        await new Promise(rf => requestAnimationFrame(() => rf()));
-        let fullDataUrl;
-        try {
-          fullDataUrl = await VibeAPI.captureVisibleTab();
-        } finally {
-          if (host) host.style.visibility = '';
-        }
-        if (!fullDataUrl) return;
-
-        // Crop to the element region in the content world (service workers can't
-        // easily turn a Blob back into a data URL), then attach the webp.
-        const fullBlob = await (await fetch(fullDataUrl)).blob();
-        const bitmap = await createImageBitmap(fullBlob, crop.sx, crop.sy, crop.sw, crop.sh);
-        const canvas = document.createElement('canvas');
-        canvas.width = crop.sw; canvas.height = crop.sh;
-        canvas.getContext('2d').drawImage(bitmap, 0, 0);
-        if (bitmap.close) bitmap.close();
-        const webp = await new Promise(res => canvas.toBlob(res, 'image/webp', 0.85));
-        if (webp) await handleAttach(webp, 'image/webp', 'capture');
-      } catch (err) {
-        console.warn('[Vibe] screenshot failed:', err);
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        statusEl.textContent = 'Capturing and saving locally…';
+        const { attachment } = await LocalAttachments.capture(draftId, captureMode, crop);
+        // No tile/link is published before the worker confirms IDB commit.
+        localAttachments.push(attachment);
+        renderAttachments();
+        markAttachmentsChanged();
+        const preview = await LocalAttachments.read(attachment.id);
+        sessionBlobUrls.set(attachment.id, URL.createObjectURL(await (await fetch(preview.dataUrl)).blob()));
+        renderAttachments();
+        markAttachmentsChanged();
+        statusEl.textContent = 'Saved locally. Click the image to preview or save it.';
       } finally {
-        capturing = false;
+        if (host) host.style.visibility = visibility;
       }
     }
+
+    function runCapture(captureMode) {
+      if (capturing || saving || closing) return;
+      capturing = true;
+      popover._updateSave?.();
+      addBtn.disabled = true;
+      attachmentTask = (async () => {
+        const anchorEl = currentPopover;
+        const highlightEl = currentTargetHighlight;
+        try {
+          statusEl.textContent = 'Waiting for screenshot permission…';
+          if (!await VibeAPI.requestScreenshotPermission()) throw new Error('Screenshot permission was not granted. Your text is unchanged.');
+          if (closing) return;
+          if (captureMode === 'region') {
+            statusEl.textContent = 'Select a region…';
+            if (anchorEl) anchorEl.style.visibility = 'hidden';
+            if (highlightEl) highlightEl.style.visibility = 'hidden';
+            const box = await VibeRegionCapture.start();
+            if (box && !closing) await captureCssRegion(box, captureMode);
+            else statusEl.textContent = 'Region capture cancelled.';
+          } else {
+            const r = targetElement.getBoundingClientRect();
+            const left = Math.max(0, r.left - 16), top = Math.max(0, r.top - 16);
+            const right = Math.min(innerWidth, r.right + 16), bottom = Math.min(innerHeight, r.bottom + 16);
+            await captureCssRegion({ left, top, width: right - left, height: bottom - top }, captureMode);
+          }
+        } catch (err) {
+          showAttachmentError(err);
+        } finally {
+          if (anchorEl) anchorEl.style.visibility = '';
+          if (highlightEl) highlightEl.style.visibility = '';
+          capturing = false;
+          addBtn.disabled = false;
+          popover._updateSave?.();
+          if (!closing && textarea.isConnected) textarea.focus();
+        }
+      })();
+    }
+    const takeScreenshot = () => runCapture('element');
+    const takeRegionScreenshot = () => runCapture('region');
     textarea.addEventListener('paste', (e) => {
       const items = e.clipboardData?.items || [];
       for (const item of items) {
@@ -419,30 +470,56 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
       }
     });
     attachmentsEl.addEventListener('click', async (e) => {
+      if (capturing || saving || closing) return;
       const removeBtn = e.target.closest('.vibe-att-remove');
       if (removeBtn) {
         e.stopPropagation();
         const attId = removeBtn.getAttribute('data-att');
         const pendingIndex = removeBtn.getAttribute('data-pending');
-        if (attId) {
-          try { await VibeAPI.removeAttachment(activeExistingAnnotation.id, attId); } catch (err) { console.warn('[Vibe] remove failed:', err); }
-          const url = sessionBlobUrls.get(attId);
-          if (url) { URL.revokeObjectURL(url); sessionBlobUrls.delete(attId); }
-          activeExistingAnnotation.attachments = (activeExistingAnnotation.attachments || []).filter(a => a.id !== attId);
-        } else if (pendingIndex != null) {
-          const p = pendingAttachments[Number(pendingIndex)];
-          if (p) { URL.revokeObjectURL(p.url); pendingAttachments.splice(Number(pendingIndex), 1); }
-        }
-        renderAttachments();
-        markAttachmentsChanged();
+        try {
+          if (attId) {
+            const local = localAttachments.find(a => a.id === attId);
+            if (local) {
+              // Bound bytes are removed only after successful Save; Cancel preserves them.
+              if (!local.annotation_id) await LocalAttachments.remove(attId, draftId);
+              localAttachments = localAttachments.filter(a => a.id !== attId);
+            } else {
+              await VibeAPI.removeAttachment(annotationId, attId);
+              const index = legacyAttachments.findIndex(a => a.id === attId);
+              if (index !== -1) legacyAttachments.splice(index, 1);
+            }
+            const url = sessionBlobUrls.get(attId);
+            if (url) { URL.revokeObjectURL(url); sessionBlobUrls.delete(attId); }
+          } else if (pendingIndex != null) {
+            const p = pendingAttachments[Number(pendingIndex)];
+            if (p) { URL.revokeObjectURL(p.url); pendingAttachments.splice(Number(pendingIndex), 1); }
+          }
+          renderAttachments();
+          markAttachmentsChanged();
+        } catch (err) { showAttachmentError(err); }
         return;
       }
-      // Click a tile → open the full image in a new tab.
       const tile = e.target.closest('.vibe-att-tile');
       if (!tile) return;
       const attId = tile.getAttribute('data-att');
       const pendingIndex = tile.getAttribute('data-pending');
-      if (attId) window.open(VibeAPI.attachmentUrl(activeExistingAnnotation.id, attId), '_blank', 'noopener');
+      if (localAttachments.some(a => a.id === attId)) {
+        try {
+          const { dataUrl } = await LocalAttachments.read(attId);
+          const preview = document.createElement('div');
+          preview.className = 'vibe-local-preview';
+          preview.innerHTML = `<button type="button" class="vibe-btn vibe-preview-close">Close preview</button>
+            <a class="vibe-btn" download="${P.escapeHTML(attId)}.webp">Save image</a><img alt="Local screenshot preview">`;
+          const url = URL.createObjectURL(await (await fetch(dataUrl)).blob());
+          preview.querySelector('img').src = url;
+          preview.querySelector('a').href = url;
+          const closePreview = () => { URL.revokeObjectURL(url); preview.remove(); };
+          preview.querySelector('button').addEventListener('click', closePreview);
+          // Keep the URL owned by this session even if the card closes first.
+          sessionBlobUrls.set('preview:' + url, url);
+          popover.appendChild(preview);
+        } catch (err) { showAttachmentError(err); }
+      } else if (attId) window.open(VibeAPI.attachmentUrl(annotationId, attId), '_blank', 'noopener');
       else if (pendingIndex != null && pendingAttachments[Number(pendingIndex)]) window.open(pendingAttachments[Number(pendingIndex)].url, '_blank', 'noopener');
     });
     attachmentsEl.addEventListener('error', (e) => {
@@ -453,8 +530,14 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
     }, true);
     renderAttachments();
 
-    // Expose pending uploads to doSave (uploaded once the annotation exists).
-    activePendingAttachments = pendingAttachments;
+    for (const attachment of localAttachments) {
+      LocalAttachments.read(attachment.id).then(async ({ dataUrl }) => {
+        const blob = await (await fetch(dataUrl)).blob();
+        if (closing) return;
+        sessionBlobUrls.set(attachment.id, URL.createObjectURL(blob));
+        renderAttachments();
+      }).catch(showAttachmentError);
+    }
 
     // --- Mode bar (Comment / Design / Variants) ---
     // Comment + Design are combinable views on ONE annotation (both save together).
@@ -694,6 +777,7 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
     // Enable/disable save
     const updateSave = () => {
       updateSectionDots();
+      if (capturing || saving || closing) { saveBtn.disabled = true; return; }
       // Variants is its own path — save is gated on the (shared) instruction only.
       if (activeMode === 'variants') {
         saveBtn.textContent = 'Create variants';
@@ -702,9 +786,7 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
       }
       const text = textarea.value.trim();
       const hasDesignChanges = !!buildPendingChanges();
-      // An image attachment (pending/added) or a screenshot that will be captured
-      // on save counts as content — the annotation isn't just a bare pointer.
-      const hasImage = pendingAttachments.length > 0 || VibeAPI.isScreenshotEnabled();
+      const hasImage = pendingAttachments.length > 0 || localAttachments.length > 0;
       if (isEdit) {
         const commentChanged = text !== (existingAnnotation.comment || '');
         const savedPC = existingAnnotation.pending_changes || null;
@@ -714,8 +796,8 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
         saveBtn.disabled = !commentChanged && !designChanged && !cssRulesChanged && !attachmentsDirty;
         saveBtn.textContent = 'Save';
       } else {
-        saveBtn.disabled = false;
-        saveBtn.textContent = (text || hasDesignChanges || hasImage) ? 'Save annotation' : 'Save as pointer';
+        saveBtn.disabled = !(text || hasDesignChanges || hasImage);
+        saveBtn.textContent = 'Save annotation';
       }
     };
     textarea.addEventListener('input', updateSave);
@@ -778,9 +860,8 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
     }
 
     // Save
-    let saving = false;
     async function doSave() {
-      if (saving) return;
+      if (saving || capturing || closing) return;
       saving = true;
       saveBtn.disabled = true;
 
@@ -803,32 +884,42 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
         }
 
         if (isEdit) {
-          const updates = { comment, updated_at: new Date().toISOString(), pending_changes: pendingChanges, css: cssField };
-          await VibeAPI.updateAnnotation(existingAnnotation.id, updates);
-          VibeEvents.emit('annotation:updated', { id: existingAnnotation.id, comment, pending_changes: pendingChanges, css: cssField });
+          const updates = { comment, updated_at: new Date().toISOString(), pending_changes: pendingChanges, css: cssField,
+            attachments: [...legacyAttachments, ...localAttachments] };
+          for (const p of pendingAttachments) {
+            if (!p.attachment) p.attachment = await VibeAPI.uploadUserImage(annotationId, p.blob, p.mime, p.kind);
+            updates.attachments.push(p.attachment);
+          }
+          await LocalAttachments.update(annotationId, updates, draftId);
+          VibeEvents.emit('annotation:updated', { id: annotationId, ...updates });
         } else {
           const annotation = buildAnnotation(context, comment, pendingChanges);
+          annotation.id = annotationId;
+          annotation.attachments = [...localAttachments];
           if (isVariants) annotation.mode = 'variants';
           annotation.selector_preview = getElementOpenTagPreview(targetElement);
           annotation.element_context.id = targetElement.id || null;
           annotation.element_context.role = targetElement.getAttribute('role') || null;
           if (cssField) annotation.css = cssField;
           if (savedBadgeOffset) annotation.badge_offset = savedBadgeOffset;
-          await VibeAPI.saveAnnotation(annotation);
-          // Upload any images attached before the annotation existed on the server.
-          if (activePendingAttachments && activePendingAttachments.length) {
-            for (const p of activePendingAttachments) {
-              VibeAPI.uploadUserImage(annotation.id, p.blob, p.mime, p.kind || 'user').catch(() => {});
-            }
+          // Local capture binding precedes publication. Legacy user files keep their
+          // separate server path, but failures are awaited and remain visible.
+          await LocalAttachments.save(annotation, draftId);
+          for (const p of pendingAttachments) {
+            if (!p.attachment) p.attachment = await VibeAPI.uploadUserImage(annotationId, p.blob, p.mime, p.kind);
+            annotation.attachments.push(p.attachment);
           }
+          if (pendingAttachments.length) await LocalAttachments.save(annotation, draftId);
           VibeEvents.emit('annotation:saved', { annotation, element: targetElement });
         }
 
-        dismiss(true, true);
+        saving = false;
+        await dismiss(true, true);
       } catch (err) {
         saving = false;
         saveBtn.disabled = false;
-        console.warn('[Vibe] Save failed:', err);
+        showAttachmentError(err);
+        updateSave();
       }
     }
 
@@ -963,7 +1054,12 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
 
   // --- Dismiss ---
 
-  function dismiss(reEnableInspection = false, saved = false) {
+  async function dismiss(reEnableInspection = false, saved = false) {
+    const session = activeAttachmentSession;
+    if (session) {
+      if (await session.close(saved) === false || activeAttachmentSession !== session) return false;
+      activeAttachmentSession = null;
+    }
     const hadPopover = !!currentPopover;
 
     if (hadPopover && !saved && activeElement && activeOriginalCssText !== null) {
@@ -1142,8 +1238,11 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
         text: context.text,
         path: context.path || null,
         styles: context.styles,
-        position: context.position
+        position: context.position,
+        angular: context.source_mapping?.angular || null,
+        target_identity: context.target_identity || null,
       },
+      framework: context.source_mapping?.framework || null,
       source_file_path: context.source_mapping?.source_file_path || null,
       source_line_range: context.source_mapping?.source_line_range || null,
       project_area: context.source_mapping?.project_area || 'unknown',

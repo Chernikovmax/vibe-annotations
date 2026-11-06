@@ -24,6 +24,10 @@ export default defineContentScript({
   main() {
     if (window.__vibeAnnotations) return;
 
+    // Install before the page registers any listener (document_start), so modal
+    // frameworks never learn that our overlay exists — see installUiEventIsolation().
+    installUiEventIsolation();
+
     const TIMEOUT = 5000;
     let reqId = 0;
 
@@ -50,6 +54,120 @@ export default defineContentScript({
           }),
         );
       });
+    }
+
+    // --- Extension-UI event isolation ---
+    //
+    // Everything the extension renders lives inside one host element inside a shadow
+    // root. Page code must never see interactions with it: a modal dialog (Angular
+    // Material's MatDialog, for one) closes on a document-level outside pointerdown
+    // and its focus trap pulls focus back into the dialog — both fire on every click
+    // or keystroke inside our popover, which makes annotating anything under a modal
+    // overlay impossible (the dialog closes, or you cannot type).
+    //
+    // Shadow DOM retargets, it does not isolate: composed events still travel to
+    // document/window listeners. So wrap page listeners bound to the few targets that
+    // are ancestors of our host and drop events whose path passes through it. Only
+    // document/window/body/html need wrapping, and only for interaction types, which
+    // keeps the per-event cost off the page's own element listeners.
+    const VIBE_HOST_ID = 'vibe-annotations-root';
+    const ISOLATED_EVENT_TYPES = new Set([
+      'pointerdown', 'pointerup', 'pointermove', 'pointercancel',
+      'mousedown', 'mouseup', 'mousemove', 'mouseover', 'mouseout',
+      'click', 'dblclick', 'auxclick', 'contextmenu',
+      'touchstart', 'touchmove', 'touchend', 'touchcancel',
+      'keydown', 'keyup', 'keypress',
+      'focus', 'blur', 'focusin', 'focusout',
+      'input', 'change', 'submit',
+      'wheel', 'scroll',
+      'dragstart', 'drag', 'dragend', 'drop',
+    ]);
+
+    function installUiEventIsolation() {
+      const proto = EventTarget.prototype;
+      const origAdd = proto.addEventListener;
+      const origRemove = proto.removeEventListener;
+      if (origAdd.__vibeIsolation) return;
+
+      // target → `${type}|${capture}` → Map(original listener → wrapped listener)
+      const registry = new WeakMap();
+
+      function isPageRoot(target) {
+        return target === document || target === window
+          || target === document.body || target === document.documentElement;
+      }
+
+      function isFromVibe(event) {
+        const host = document.getElementById(VIBE_HOST_ID);
+        if (!host) return false;
+        if (event.target === host) return true; // retargeted to the shadow host
+        let path;
+        try { path = event.composedPath ? event.composedPath() : null; } catch { path = null; }
+        return !!(path && path.includes(host));
+      }
+
+      function normalize(options) {
+        if (typeof options === 'boolean') return { capture: options, once: false, passive: undefined };
+        const o = options || {};
+        return { capture: !!o.capture, once: !!o.once, passive: o.passive };
+      }
+
+      function remember(target, key, original, wrapped) {
+        let byKey = registry.get(target);
+        if (!byKey) { byKey = new Map(); registry.set(target, byKey); }
+        let byListener = byKey.get(key);
+        if (!byListener) { byListener = new Map(); byKey.set(key, byListener); }
+        byListener.set(original, wrapped);
+      }
+
+      function forget(target, key, original) {
+        const byKey = registry.get(target);
+        const byListener = byKey && byKey.get(key);
+        if (!byListener) return undefined;
+        const wrapped = byListener.get(original);
+        byListener.delete(original);
+        return wrapped;
+      }
+
+      proto.addEventListener = function (type, listener, options) {
+        const name = String(type);
+        if (!listener || !ISOLATED_EVENT_TYPES.has(name) || !isPageRoot(this)) {
+          return origAdd.call(this, type, listener, options);
+        }
+        const opts = normalize(options);
+
+        let invoke;
+        if (typeof listener === 'function') {
+          invoke = listener;
+        } else if (typeof listener.handleEvent === 'function') {
+          invoke = listener.handleEvent.bind(listener);
+        } else {
+          return origAdd.call(this, type, listener, options);
+        }
+
+        const wrapped = function (event) {
+          // Our own UI → the page stays unaware. A `once` listener that swallowed
+          // nothing must stay armed, so it is removed manually only after a real call.
+          if (isFromVibe(event)) return;
+          if (opts.once) origRemove.call(this, type, wrapped, opts.capture);
+          return invoke.call(this, event);
+        };
+        wrapped.__vibeOriginal = listener;
+
+        remember(this, name + '|' + opts.capture, listener, wrapped);
+        return origAdd.call(this, type, wrapped, { capture: opts.capture, passive: opts.passive, once: false });
+      };
+      proto.addEventListener.__vibeIsolation = true;
+
+      proto.removeEventListener = function (type, listener, options) {
+        const name = String(type);
+        if (!listener || !ISOLATED_EVENT_TYPES.has(name) || !isPageRoot(this)) {
+          return origRemove.call(this, type, listener, options);
+        }
+        const opts = normalize(options);
+        const wrapped = forget(this, name + '|' + opts.capture, listener);
+        return origRemove.call(this, type, wrapped || listener, options);
+      };
     }
 
     window.__vibeAnnotations = {
@@ -167,7 +285,7 @@ export default defineContentScript({
       const el = deepQuery(sel);
       if (!el) return null;
 
-      return readReactSource(el) || readVueSource(el) || null;
+      return readAngularSource(el) || readReactSource(el) || readVueSource(el) || null;
     }
 
     // Walk up across shadow boundaries (MAIN world has no shared util for this).
@@ -192,6 +310,182 @@ export default defineContentScript({
         return null;
       };
       try { return walk(document); } catch { return null; }
+    }
+
+    // --- Angular ---
+    //
+    // Debug discovery describes observed view ownership, not source paths or the
+    // caller of MatDialog.open(). Embedded portals may expose insertion ownership.
+    function readAngularSource(element) {
+      const ng = window.ng;
+      // Production Angular can leave a profiler-only window.ng object.
+      if (!ng || !['getOwningComponent', 'getComponent'].some(api => typeof ng[api] === 'function')) return null;
+
+      const issues = [];
+      const call = (api, arg) => {
+        if (typeof ng[api] !== 'function') {
+          if (!issues.some(i => i.api === api)) issues.push({ api, reason: 'api_unavailable' });
+          return { value: null, reason: 'api_unavailable' };
+        }
+        try { return { value: ng[api](arg) }; }
+        catch {
+          if (!issues.some(i => i.api === api)) issues.push({ api, reason: 'api_error' });
+          return { value: null, reason: 'api_error' };
+        }
+      };
+      const nameOf = instance => {
+        // Inspect descriptors, never application getters (including constructor).
+        try {
+          let proto = Object.getPrototypeOf(instance);
+          while (proto) {
+            const ctor = Object.getOwnPropertyDescriptor(proto, 'constructor')?.value;
+            const name = ctor && Object.getOwnPropertyDescriptor(ctor, 'name')?.value;
+            if (typeof name === 'string') {
+              return name.length <= 120 && !isMinifiedName(name) ? name : null;
+            }
+            proto = Object.getPrototypeOf(proto);
+          }
+        } catch { /* unknown identity must not stop ownership traversal */ }
+        return null;
+      };
+      const hosts = new Map();
+      const hostOf = instance => {
+        if (!hosts.has(instance)) hosts.set(instance, call('getHostElement', instance));
+        return hosts.get(instance);
+      };
+      const describe = instance => {
+        if (!instance) return null;
+        const host = hostOf(instance).value;
+        return {
+          name: nameOf(instance),
+          ...(host?.nodeType === 1 ? { host: describeAngularHost(host) } : {}),
+        };
+      };
+
+      // These reads are independent. In particular, a component host belongs to
+      // its declaring view, not necessarily to the component it hosts.
+      const owner = call('getOwningComponent', element);
+      const hosted = call('getComponent', element);
+      const primary = owner.value || hosted.value;
+      const templateOwner = describe(owner.value);
+      const hostedComponent = describe(hosted.value);
+      const seen = new Set();
+      const names = [];
+      let unnamed = 0;
+      let current = primary;
+      let stop = owner.reason || hosted.reason || 'no_owner';
+      while (current) {
+        if (seen.has(current)) { stop = 'cycle'; break; }
+        seen.add(current);
+        const name = nameOf(current);
+        if (name) names.push(name);
+        else unnamed++;
+        const host = hostOf(current);
+        if (host.reason) { stop = host.reason; break; }
+        if (!host.value) { stop = 'no_owner'; break; }
+        const parent = call('getOwningComponent', host.value);
+        if (parent.reason) { stop = parent.reason; break; }
+        if (!parent.value) { stop = 'no_owner'; break; }
+        if (parent.value === current) { stop = 'self_owner'; break; }
+        if (seen.has(parent.value)) { stop = 'cycle'; break; }
+        if (seen.size >= 20) { stop = 'depth_limit'; break; }
+        current = parent.value;
+      }
+
+      const angular = {
+        ...(nameOf(primary) ? { component: nameOf(primary) } : {}),
+        ...(templateOwner ? { template_owner: templateOwner } : {}),
+        ...(hostedComponent ? { hosted_component: hostedComponent } : {}),
+        chain: {
+          status: 'observed',
+          components: names.reverse(),
+          stop_reason: stop,
+          instance_count: seen.size,
+          ...(unnamed ? { unnamed_count: unnamed } : {}),
+          limitations: [
+            'Not proven complete ancestry; no_owner does not prove an application root.',
+            'Not dialog opener history.',
+            'getOwningComponent may report insertion ownership for embedded portals, not the template declaration.',
+          ],
+        },
+      };
+      const directives = call('getDirectives', element).value;
+      if (Array.isArray(directives)) {
+        angular.directives = directives.map(nameOf).filter(Boolean).slice(0, 6);
+      }
+      if (primary) {
+        const meta = call('getDirectiveMetadata', primary).value;
+        if (meta) {
+          // Debug metadata maps public names to property names. Never read those
+          // properties: even a primitive input can be an application getter.
+          angular.input_names = Object.keys(meta.inputs || {}).filter(n => n.length <= 120).slice(0, 8);
+          if (meta.framework == null || meta.framework === 'angular') {
+            if (meta.changeDetection === 0) angular.change_detection = 'OnPush';
+            else if (meta.changeDetection === 1) angular.change_detection = 'Default';
+          }
+        }
+      }
+      const versions = [...new Set(Array.from(document.querySelectorAll('[ng-version]'))
+        .map(el => el.getAttribute('ng-version')).filter(v => /^\d+\.\d+\.\d+[-\w.]*$/.test(v) && v.length <= 120))];
+      if (versions.length === 1) {
+        angular.version = versions[0];
+        angular.version_source = 'document [ng-version] attribute';
+      }
+      if (issues.length) angular.api_issues = issues;
+      return {
+        filePath: null,
+        lineRange: null,
+        hasSourceMap: false,
+        componentName: angular.component || null,
+        angular,
+        target_identity: describeAngularTarget(element, owner.value ? hostOf(owner.value).value : null),
+      };
+    }
+
+    function describeAngularHost(el) {
+      return {
+        tag: el.tagName.toLowerCase(),
+        classes: Array.from(el.classList || [])
+          .filter(c => c.length <= 120 && !/^(ng-|cdk-|_ng|_mat-|mat-|mdc-|vibe-)/.test(c))
+          .slice(0, 6),
+      };
+    }
+
+    function describeAngularTarget(element, ownerHost) {
+      const target = { ...describeAngularHost(element), attributes: {} };
+      for (const name of ['data-testid', 'data-test', 'data-cy', 'data-component', 'role', 'type']) {
+        const value = element.getAttribute(name);
+        if (value !== null) target.attributes[name] = value.slice(0, 120);
+      }
+      if (!ownerHost) return { ...target, relative_selector_reason: 'owner_host_unavailable' };
+      // A shadow template is scoped to its actual root, not queried through a host.
+      const root = ownerHost.shadowRoot?.contains(element) ? ownerHost.shadowRoot : ownerHost;
+      if (element === ownerHost) {
+        return { ...target, relative_selector: ':scope', match_count: 1, match_scope: 'owner_host_self' };
+      }
+      if (!root.contains(element)) return { ...target, relative_selector_reason: 'outside_owner_host' };
+      target.match_scope = root === ownerHost ? 'owner_host' : 'owner_shadow_root';
+      for (const name of ['data-testid', 'data-test', 'data-cy', 'data-component']) {
+        const value = element.getAttribute(name);
+        if (value === null || value.length > 120) continue;
+        const selector = `[${name}="${CSS.escape(value)}"]`;
+        const count = root.querySelectorAll(selector).length;
+        if (count) return { ...target, relative_selector: selector, match_count: count };
+      }
+      const classes = target.classes.map(c => `.${CSS.escape(c)}`).join('');
+      const candidate = CSS.escape(target.tag) + classes;
+      if (root.querySelectorAll(candidate).length === 1) {
+        return { ...target, relative_selector: candidate, match_count: 1 };
+      }
+      const path = [];
+      let node = element;
+      while (node && node !== root) {
+        const siblings = Array.from(node.parentNode.children).filter(s => s.tagName === node.tagName);
+        path.unshift(`${CSS.escape(node.tagName.toLowerCase())}:nth-of-type(${siblings.indexOf(node) + 1})`);
+        node = node.parentNode;
+      }
+      const selector = (root === ownerHost ? ':scope > ' : '') + path.join(' > ');
+      return { ...target, relative_selector: selector, match_count: root.querySelectorAll(selector).length };
     }
 
     // --- React ---

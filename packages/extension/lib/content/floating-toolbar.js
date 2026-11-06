@@ -20,7 +20,6 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
   let annotationCount = 0;
   let styleAnnotationCount = 0;
   let clearOnCopy = false;
-  let screenshotEnabled = false;
   let badgeColor = '#D03D68';
   let watcherActive = false;
   let isOverlayVisible = true;
@@ -86,7 +85,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     if (!root) return;
 
     clearOnCopy = await VibeAPI.getClearOnCopy();
-    screenshotEnabled = await VibeAPI.getScreenshotEnabled();
+    
     badgeColor = await VibeAPI.getBadgeColor();
     applyBadgeColor(badgeColor);
     customShortcut = await VibeAPI.getCustomShortcut();
@@ -722,11 +721,11 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
           <div class="vibe-settings-item-left">
             ${ICONS.camera}
             <div>
-              <span>Screenshots</span>
-              <div style="font-size:11px;color:var(--v-text-secondary);margin-top:1px;">Only used via MCP server, not clipboard</div>
+              <span>Local screenshots</span>
+              <div style="font-size:11px;color:var(--v-text-secondary);margin-top:1px;">Screenshots stay in this browser and are not sent to the server.</div>
             </div>
           </div>
-          <button class="vibe-toggle vibe-screenshot-toggle ${screenshotEnabled ? 'on' : ''}" type="button"></button>
+          <button class="vibe-settings-link vibe-clear-local-images-btn" type="button">Clear local images</button>
         </div>
         <div class="vibe-settings-item">
           <div class="vibe-settings-item-left">
@@ -752,18 +751,18 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
       await VibeAPI.saveClearOnCopy(clearOnCopy);
     });
 
-    // Screenshot toggle — turning ON requires the broad host permission that
-    // captureVisibleTab needs, so request it first (within this click gesture).
-    // If the user declines, leave the toggle off.
-    settingsDropdown.querySelector('.vibe-screenshot-toggle').addEventListener('click', async (e) => {
-      const toggle = e.currentTarget;
-      if (!screenshotEnabled) {
-        const granted = await VibeAPI.requestScreenshotPermission();
-        if (!granted) return; // stay off — no permission, capture can't work
+    settingsDropdown.querySelector('.vibe-clear-local-images-btn').addEventListener('click', async (e) => {
+      if (!window.confirm('Clear all locally stored screenshots? This cannot be undone.')) return;
+      const button = e.currentTarget;
+      button.disabled = true;
+      try {
+        const response = await chrome.runtime.sendMessage({ action: 'clearLocalAttachments' });
+        if (!response?.success) throw new Error(response?.error || 'Could not clear local images.');
+      } catch (error) {
+        showInfoModal('Could not clear local images', error.message);
+      } finally {
+        button.disabled = false;
       }
-      screenshotEnabled = !screenshotEnabled;
-      toggle.classList.toggle('on', screenshotEnabled);
-      await VibeAPI.saveScreenshotEnabled(screenshotEnabled);
     });
 
     // Shortcut key recorder

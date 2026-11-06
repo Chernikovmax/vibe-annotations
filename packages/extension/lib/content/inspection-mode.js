@@ -61,8 +61,7 @@ import VibeElementContext from './element-context.js';
     document.addEventListener('click', onClick, true);
     document.addEventListener('keydown', onKeyDown, true);
     listenersAttached = true;
-
-    // Crosshair cursor on all host page elements
+    attachTrailingGuards();
     const cursorStyle = document.createElement('style');
     cursorStyle.setAttribute('data-vibe-cursor', '');
     cursorStyle.textContent = '*, *::before, *::after { cursor: crosshair !important; }';
@@ -100,6 +99,9 @@ import VibeElementContext from './element-context.js';
     const cursorStyle = document.querySelector('[data-vibe-cursor]');
     if (cursorStyle) cursorStyle.remove();
 
+    detachTrailingGuards();
+    guardUntil = 0;
+
     VibeEvents.emit('inspection:stopped');
   }
 
@@ -108,6 +110,39 @@ import VibeElementContext from './element-context.js';
   }
 
   let listenersAttached = false;
+
+  // Selecting an element ends inspection for the current interaction, but the browser
+  // keeps dispatching pointerup/mouseup/click to the page right after. Without a guard
+  // those reach the app — a modal backdrop closes the very dialog the annotation was
+  // made on. So these listeners outlive tempDisable() and swallow only the tail of the
+  // interaction that selected an element.
+  const TRAILING_EVENT_TYPES = ['pointerup', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu'];
+  const TRAILING_GUARD_MS = 700;
+  let guardUntil = 0;
+  let guardListeners = null;
+
+  function armTrailingGuards() {
+    guardUntil = performance.now() + TRAILING_GUARD_MS;
+  }
+
+  function attachTrailingGuards() {
+    if (guardListeners) return;
+    guardListeners = TRAILING_EVENT_TYPES.map((type) => {
+      const handler = (e) => {
+        if (!active || isOurUI(e) || performance.now() > guardUntil) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      };
+      window.addEventListener(type, handler, true);
+      return [type, handler];
+    });
+  }
+
+  function detachTrailingGuards() {
+    if (!guardListeners) return;
+    for (const [type, handler] of guardListeners) window.removeEventListener(type, handler, true);
+    guardListeners = null;
+  }
 
   // --- Shadow-aware target resolution ---
 
@@ -223,6 +258,7 @@ import VibeElementContext from './element-context.js';
     if (!target || target === document.body || target === document.documentElement) return;
 
     tempDisable();
+    armTrailingGuards();
     VibeEvents.emit('inspection:elementClicked', { element: target, clientX: e.clientX, clientY: e.clientY });
   }
 
@@ -246,6 +282,7 @@ import VibeElementContext from './element-context.js';
     if (e.key === 'Enter') {
       const rect = current.getBoundingClientRect();
       tempDisable();
+      armTrailingGuards();
       VibeEvents.emit('inspection:elementClicked', {
         element: current,
         clientX: rect.left + rect.width / 2,

@@ -10,7 +10,6 @@ import VibeInspectionMode from '../../lib/content/inspection-mode.js';
 import VibeAnnotationPopover from '../../lib/content/annotation-popover.js';
 import VibeBridgeHandler from '../../lib/content/bridge-handler.js';
 import VibeToolbar from '../../lib/content/floating-toolbar.js';
-import VibeScreenshot from '../../lib/content/screenshot.js';
 import { shouldTriggerHotkey } from '../../lib/content/hotkey.js';
 
 // --- State ---
@@ -72,7 +71,6 @@ async function bootNormal() {
   VibeInspectionMode.init();
   VibeAnnotationPopover.init();
   VibeBridgeHandler.init(() => annotations);
-  VibeScreenshot.init();
   await VibeToolbar.init();
 
   setupMessageListener();

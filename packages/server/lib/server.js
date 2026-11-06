@@ -45,6 +45,16 @@ const extForMime = (mime) => EXT_BY_MIME[mime] || 'bin';
 const attachmentFileFor = (annotationId, att) =>
   path.join(ATTACH_DIR, `${annotationId}__${att.id}.${extForMime(att.mime)}`);
 
+// `app-user-card.card#main` — the shape a developer greps for in templates.
+// Angular's own runtime classes (ng-*, cdk-*, _nghost-*) are dropped before they
+// reach the annotation, so everything here exists in source.
+const formatAngularHost = (host) => {
+  if (!host || !host.tag) return null;
+  return host.tag
+    + (host.id ? `#${host.id}` : '')
+    + (Array.isArray(host.classes) ? host.classes.map((c) => `.${c}`).join('') : '');
+};
+
 class LocalAnnotationsServer {
   constructor() {
     this.app = express();
@@ -1449,6 +1459,9 @@ class LocalAnnotationsServer {
         .map(att => ({ kind: att.kind, mime: att.mime, file: attachmentFileFor(a.id, att) }))
         .filter(img => existsSync(img.file));
       const componentHint = (a.context_hints || []).find(h => typeof h === 'string' && h.startsWith('Component:'));
+      const angularHint = (a.context_hints || []).find(h => typeof h === 'string' && h.startsWith('Angular component:'));
+      const angularPathHint = (a.context_hints || []).find(h => typeof h === 'string' && h.startsWith('Angular component path:'));
+      const ng = a.element_context?.angular || null;
       // Flatten the design edits (pending_changes) into label/from/to rows.
       const changes = [];
       for (const [prop, v] of Object.entries(a.pending_changes || {})) {
@@ -1459,7 +1472,13 @@ class LocalAnnotationsServer {
         num: i + 1,
         comment: a.comment || '',
         url_path: a.url_path || a.url || '',
-        component: componentHint ? componentHint.replace('Component:', '').trim() : null,
+        component: (ng && ng.component)
+          || (componentHint ? componentHint.replace('Component:', '').trim() : null)
+          || (angularHint ? angularHint.replace('Angular component:', '').trim() : null),
+        component_path: angularPathHint
+          ? angularPathHint.replace('Angular component path:', '').trim()
+          : null,
+        component_host: ng && ng.host ? formatAngularHost(ng.host) : null,
         source_file_path: a.source_file_path || null,
         // A data-vibe-id is injected live by the extension and is NOT in the source —
         // useless to an agent/reader. Fall back to the readable DOM path instead.
@@ -1494,6 +1513,8 @@ class LocalAnnotationsServer {
       }
       const rows = [
         it.component ? `<dt>Component</dt><dd><code>${esc(it.component)}</code></dd>` : '',
+        it.component_path ? `<dt>Component path</dt><dd><code>${esc(it.component_path)}</code></dd>` : '',
+        it.component_host ? `<dt>Angular host</dt><dd><code>${esc(it.component_host)}</code></dd>` : '',
         it.source_file_path ? `<dt>Source</dt><dd><code>${esc(it.source_file_path)}</code></dd>` : '',
         it.url_path ? `<dt>Page</dt><dd>${esc(it.url_path)}</dd>` : '',
         it.selector ? `<dt>Selector</dt><dd><code>${esc(it.selector)}</code></dd>` : '',
@@ -1721,6 +1742,17 @@ figcaption{padding:4px 8px;font-size:11px;color:#6b7280;background:#fafafa}
       // Strip null values from element_context
       for (const key of Object.keys(clean.element_context)) {
         if (clean.element_context[key] == null) delete clean.element_context[key];
+      }
+
+      // Angular identity is a nested object — prune its nulls the same way so every
+      // annotation read doesn't carry `version: null, inputs: null, …`.
+      const ng = clean.element_context.angular;
+      if (ng && typeof ng === 'object') {
+        for (const key of Object.keys(ng)) {
+          const value = ng[key];
+          if (value == null || (Array.isArray(value) && value.length === 0)) delete ng[key];
+        }
+        if (!Object.keys(ng).length) delete clean.element_context.angular;
       }
     }
 

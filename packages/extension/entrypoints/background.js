@@ -7,6 +7,13 @@ import { isConnected, checkConnection, getCachedStatus, syncAll, saveOne, delete
 import { formatExport } from '../lib/background/export.js';
 import { migrateSyncFlags } from '../lib/background/utils.js';
 
+import {
+  bindLocalAttachments, cleanupExpiredDrafts, clearLocalAttachments,
+  confirmLocalAttachmentsPublished, createLocalAttachment,
+  discardLocalDraft as discardLocalDraftRecords, listLocalAttachments,
+  readLocalAttachment, reconcileLocalAttachmentReferences, removeBoundLocalAttachmentIds,
+  removeBoundLocalAttachments, removeLocalAttachment, unbindLocalAttachments,
+} from '../lib/background/local-attachments.js';
 function isRestrictedUrl(url) {
   if (!url) return true;
   return url.startsWith('chrome://') ||
@@ -48,6 +55,11 @@ class VibeAnnotationsBackground {
   }
 
   init() {
+    this._localAttachmentRecovery = this._withStorageLock(async () => {
+      await cleanupExpiredDrafts();
+      await this.reconcileUnpublishedLocalAttachments();
+      await cleanupExpiredDrafts();
+    }).catch(error => console.error('Local attachment recovery failed:', error));
     this.setupInstallListener();
     this.setupMessageListener();
     this.setupTabListener();
@@ -67,14 +79,19 @@ class VibeAnnotationsBackground {
   }
 
   async handleFirstInstall() {
-    try {
-      await chrome.storage.local.set({
-        annotations: [],
-        settings: { version: '0.1.0', firstInstall: Date.now(), apiEnabled: false }
-      });
-    } catch (error) {
-      console.error('Error setting up initial storage:', error);
-    }
+    return this._withStorageLock(async () => {
+      try {
+        // Unpacked reloads can emit "install" again with existing local data.
+        // Initialization must never erase published annotations or image references.
+        const existing = await chrome.storage.local.get(['annotations', 'settings']);
+        const initial = {};
+        if (!Array.isArray(existing.annotations)) initial.annotations = [];
+        if (!existing.settings) initial.settings = { version: '0.1.0', firstInstall: Date.now(), apiEnabled: false };
+        if (Object.keys(initial).length) await chrome.storage.local.set(initial);
+      } catch (error) {
+        console.error('Error setting up initial storage:', error);
+      }
+    });
   }
 
   async handleUpdate(previousVersion) {
@@ -121,7 +138,7 @@ class VibeAnnotationsBackground {
             .catch(error => sendResponse({ success: false, error: error.message }));
           break;
         case 'saveAnnotation':
-          this.saveAnnotation(request.annotation)
+          this.saveAnnotation(request.annotation, request.localDraftId)
             .then(() => sendResponse({ success: true }))
             .catch(error => sendResponse({ success: false, error: error.message }));
           break;
@@ -136,18 +153,38 @@ class VibeAnnotationsBackground {
             .catch(error => sendResponse({ success: false, error: error.message }));
           break;
         case 'updateAnnotation':
-          this.updateAnnotation(request.id, request.updates)
+          this.updateAnnotation(request.id, request.updates, request.localDraftId)
             .then(() => sendResponse({ success: true }))
             .catch(error => sendResponse({ success: false, error: error.message }));
           break;
-        case 'captureAnnotationScreenshot':
-          this.captureAnnotationScreenshot(request.id, request.crop, sender)
-            .then(() => sendResponse({ success: true }))
+        case 'captureLocalAttachment':
+          this.captureLocalAttachment(request, sender)
+            .then(attachment => sendResponse({ success: true, attachment }))
             .catch(error => sendResponse({ success: false, error: error.message }));
           break;
-        case 'captureVisibleTab':
-          chrome.tabs.captureVisibleTab(sender?.tab?.windowId, { format: 'png' })
-            .then(dataUrl => sendResponse({ success: true, dataUrl }))
+        case 'readLocalAttachment':
+          this._localAttachmentRecovery.then(() => readLocalAttachment(request.id))
+            .then(result => sendResponse({ success: true, ...result }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          break;
+        case 'listLocalAttachments':
+          this._localAttachmentRecovery.then(() => listLocalAttachments({ draftId: request.draftId, annotationId: request.annotationId }))
+            .then(attachments => sendResponse({ success: true, attachments }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          break;
+        case 'removeLocalAttachment':
+          this._localAttachmentRecovery.then(() => removeLocalAttachment(request.id, request.draftId))
+            .then(removed => sendResponse({ success: true, removed }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          break;
+        case 'discardLocalDraft':
+          this.discardLocalDraft(request.draftId)
+            .then(result => sendResponse({ success: true, ...result }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          break;
+        case 'clearLocalAttachments':
+          this.clearLocalAttachments()
+            .then(result => sendResponse({ success: true, ...result }))
             .catch(error => sendResponse({ success: false, error: error.message }));
           break;
         case 'recordAttachment':
@@ -273,25 +310,45 @@ class VibeAnnotationsBackground {
 
   // --- Storage CRUD ---
 
-  async saveAnnotation(annotation) {
+  async saveAnnotation(annotation, localDraftId) {
     return this._withStorageLock(async () => {
+      const boundIds = [];
       try {
         const result = await chrome.storage.local.get(['annotations']);
         const annotations = result.annotations || [];
-        const idx = annotations.findIndex(a => a.id === annotation.id);
-        if (idx >= 0) annotations[idx] = annotation; else annotations.push(annotation);
-        await chrome.storage.local.set({ annotations });
-
-        saveOne(annotation).then(async () => {
+        const existing = annotations.find(a => a.id === annotation.id);
+        const next = { ...annotation };
+        const localIds = (next.attachments || []).filter(att => att?.local_only).map(att => att.id);
+        if (localIds.length && !localDraftId) throw new Error('Local attachment draft id is required');
+        if (localIds.length) {
+          const bound = await bindLocalAttachments(localDraftId, next.id, localIds);
+          boundIds.push(...bound.map(att => att.id));
+          const byId = new Map(bound.map(att => [att.id, att]));
+          next.attachments = next.attachments.map(att => att?.local_only ? byId.get(att.id) : att);
+        }
+        if (existing) annotations[annotations.indexOf(existing)] = next; else annotations.push(next);
+        try {
+          await chrome.storage.local.set({ annotations });
+        } catch (error) {
+          await this.removeUnpublishedBoundAttachments(next.id, boundIds);
+          throw error;
+        }
+        await confirmLocalAttachmentsPublished(next.id, localIds);
+        const retainedLocalIds = new Set(localIds);
+        const obsoleteLocalIds = (existing?.attachments || [])
+          .filter(att => att?.local_only && !retainedLocalIds.has(att.id))
+          .map(att => att.id);
+        await removeBoundLocalAttachmentIds(next.id, obsoleteLocalIds);
+        saveOne(next).then(async () => {
           const fresh = await chrome.storage.local.get(['annotations']);
           const arr = fresh.annotations || [];
-          const target = arr.find(a => a.id === annotation.id);
+          const target = arr.find(a => a.id === next.id);
           if (target && !target._synced) {
             target._synced = true;
             await chrome.storage.local.set({ annotations: arr });
           }
         }).catch(() => {});
-        updateBadgeForUrl(annotation.url).catch(() => {});
+        updateBadgeForUrl(next.url).catch(() => {});
       } catch (error) {
         console.error('Error saving annotation:', error);
         throw error;
@@ -328,6 +385,7 @@ class VibeAnnotationsBackground {
         const filtered = annotations.filter(a => a.id !== id);
         if (!deletedIds.includes(id)) deletedIds.push(id);
         await chrome.storage.local.set({ annotations: filtered, deletedAnnotationIds: deletedIds });
+        await removeBoundLocalAttachments(id, []);
         try { await deleteOne(id); } catch {}
         const deleted = annotations.find(a => a.id === id);
         if (deleted) await updateBadgeForUrl(deleted.url);
@@ -348,6 +406,7 @@ class VibeAnnotationsBackground {
       const remaining = all.filter(a => a.url !== url);
       for (const a of toDelete) { if (!deletedIds.includes(a.id)) deletedIds.push(a.id); }
       await chrome.storage.local.set({ annotations: remaining, deletedAnnotationIds: deletedIds });
+      await Promise.all(toDelete.map(annotation => removeBoundLocalAttachments(annotation.id, [])));
       for (const a of toDelete) deleteOne(a.id).catch(() => {});
       await updateBadgeForUrl(url);
       await updateAllBadges();
@@ -355,16 +414,37 @@ class VibeAnnotationsBackground {
     });
   }
 
-  async updateAnnotation(id, updates) {
+  async updateAnnotation(id, updates, localDraftId) {
     return this._withStorageLock(async () => {
+      const newlyBoundIds = [];
       try {
         const result = await chrome.storage.local.get(['annotations']);
         const annotations = result.annotations || [];
         const idx = annotations.findIndex(a => a.id === id);
         if (idx === -1) throw new Error('Annotation not found');
-        annotations[idx] = { ...annotations[idx], ...updates, updated_at: new Date().toISOString() };
-        await chrome.storage.local.set({ annotations });
-        updateBadgeForUrl(annotations[idx].url).catch(() => {});
+        const current = annotations[idx];
+        const next = { ...current, ...updates, updated_at: new Date().toISOString() };
+        const localIds = (next.attachments || []).filter(att => att?.local_only).map(att => att.id);
+        const existingLocalIds = new Set((current.attachments || []).filter(att => att?.local_only).map(att => att.id));
+        const toBind = localIds.filter(attId => !existingLocalIds.has(attId));
+        if (toBind.length && !localDraftId) throw new Error('Local attachment draft id is required');
+        if (toBind.length) {
+          const bound = await bindLocalAttachments(localDraftId, id, toBind);
+          newlyBoundIds.push(...bound.map(att => att.id));
+          const byId = new Map(bound.map(att => [att.id, att]));
+          next.attachments = next.attachments.map(att => att?.local_only && byId.has(att.id) ? byId.get(att.id) : att);
+        }
+        annotations[idx] = next;
+        try {
+          await chrome.storage.local.set({ annotations });
+        } catch (error) {
+          await this.removeUnpublishedBoundAttachments(id, newlyBoundIds);
+          throw error;
+        }
+        const keepIds = (next.attachments || []).filter(att => att?.local_only).map(att => att.id);
+        await confirmLocalAttachmentsPublished(id, keepIds);
+        await removeBoundLocalAttachments(id, keepIds);
+        updateBadgeForUrl(next.url).catch(() => {});
       } catch (error) {
         console.error('Error updating annotation:', error);
         throw error;
@@ -372,27 +452,107 @@ class VibeAnnotationsBackground {
     });
   }
 
-  // Capture a real, cropped screenshot of the just-annotated element in one shot.
-  // The content script hides our overlay and sends a device-pixel crop rect; here
-  // we grab the visible tab, crop with OffscreenCanvas (no base64 — captureVisibleTab's
-  // data URL is blob-ified immediately), and upload the raw webp as the capture
-  // attachment. Server-authoritative, then mirror into storage.
-  async captureAnnotationScreenshot(id, crop, sender) {
-    if (!crop || !(crop.sw > 0) || !(crop.sh > 0)) return;
-
-    const dataUrl = await chrome.tabs.captureVisibleTab(sender?.tab?.windowId, { format: 'png' });
-    const fullBlob = await (await fetch(dataUrl)).blob();
-    const bitmap = await createImageBitmap(fullBlob, crop.sx, crop.sy, crop.sw, crop.sh);
-
-    const canvas = new OffscreenCanvas(crop.sw, crop.sh);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(bitmap, 0, 0);
-    if (bitmap.close) bitmap.close();
-
-    const webp = await canvas.convertToBlob({ type: 'image/webp', quality: 0.85 });
-    const { attachment } = await uploadAttachment(id, webp, 'capture', 'image/webp');
-    if (attachment) await this.recordAttachment(id, attachment);
+  async reconcileUnpublishedLocalAttachments() {
+    const { annotations = [] } = await chrome.storage.local.get(['annotations']);
+    const referenced = new Set();
+    for (const annotation of annotations) {
+      for (const attachment of annotation.attachments || []) {
+        if (attachment?.local_only) referenced.add(attachment.id);
+      }
+    }
+    await reconcileLocalAttachmentReferences(referenced);
   }
+  async removeUnpublishedBoundAttachments(annotationId, candidateIds) {
+    if (!candidateIds.length) return;
+    const { annotations = [] } = await chrome.storage.local.get(['annotations']);
+    const referenced = new Set();
+    for (const annotation of annotations) {
+      for (const attachment of annotation.attachments || []) {
+        if (attachment?.local_only) referenced.add(attachment.id);
+      }
+    }
+    const removable = candidateIds.filter(id => !referenced.has(id));
+    await unbindLocalAttachments(annotationId, removable);
+  }
+
+  async captureLocalAttachment(request, sender) {
+    const tabId = sender?.tab?.id;
+    const windowId = sender?.tab?.windowId;
+    if (!Number.isInteger(tabId) || !Number.isInteger(windowId)) throw new Error('Capture must originate from an active browser tab');
+    if (!['element', 'region'].includes(request.captureMode)) throw new Error('Capture mode must be element or region');
+    await this._localAttachmentRecovery;
+    const before = await chrome.tabs.query({ active: true, windowId });
+    if (!before.some(tab => tab.id === tabId)) throw new Error('The capture tab is no longer active');
+    const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+    const after = await chrome.tabs.query({ active: true, windowId });
+    if (!after.some(tab => tab.id === tabId)) throw new Error('The active tab changed during capture');
+    const fullBlob = await (await fetch(dataUrl)).blob();
+    const bitmap = await createImageBitmap(fullBlob);
+    try {
+      const crop = request.crop || {};
+      const sx = Math.floor(crop.sx);
+      const sy = Math.floor(crop.sy);
+      const sw = Math.ceil(crop.sw);
+      const sh = Math.ceil(crop.sh);
+      if (![sx, sy, sw, sh].every(Number.isFinite) || sx < 0 || sy < 0 || sw <= 0 || sh <= 0 || sx + sw > bitmap.width || sy + sh > bitmap.height) {
+        throw new Error('Capture crop is outside the captured image');
+      }
+      const cropped = await createImageBitmap(bitmap, sx, sy, sw, sh);
+      try {
+        const canvas = new OffscreenCanvas(cropped.width, cropped.height);
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Unable to create capture canvas');
+        context.drawImage(cropped, 0, 0);
+        const blob = await canvas.convertToBlob({ type: 'image/webp', quality: 0.85 });
+        if (blob.type !== 'image/webp') throw new Error('Unable to encode capture as WebP');
+        return await createLocalAttachment({
+          draft_id: request.draftId,
+          capture_mode: request.captureMode,
+          mime: blob.type,
+          width: cropped.width,
+          height: cropped.height,
+          blob,
+        });
+      } finally {
+        cropped.close?.();
+      }
+    } finally {
+      bitmap.close?.();
+    }
+  }
+
+  async discardLocalDraft(draftId) {
+    return this._withStorageLock(async () => {
+      const items = await listLocalAttachments({ draftId });
+      const { annotations = [] } = await chrome.storage.local.get(['annotations']);
+      const referenced = new Set();
+      for (const annotation of annotations) {
+        for (const attachment of annotation.attachments || []) {
+          if (attachment?.local_only) referenced.add(attachment.id);
+        }
+      }
+      let removed = 0;
+      for (const item of items) {
+        if (item.annotation_id && !referenced.has(item.id)) {
+          removed += await removeBoundLocalAttachmentIds(item.annotation_id, [item.id]);
+        }
+      }
+      const unbound = await discardLocalDraftRecords(draftId);
+      return { removed: removed + unbound.removed };
+    });
+  }
+  async clearLocalAttachments() {
+    return this._withStorageLock(async () => {
+      const { annotations = [] } = await chrome.storage.local.get(['annotations']);
+      const cleaned = annotations.map(annotation => ({
+        ...annotation,
+        attachments: (annotation.attachments || []).filter(att => !att?.local_only),
+      }));
+      await chrome.storage.local.set({ annotations: cleaned });
+      return clearLocalAttachments();
+    });
+  }
+
 
   // Mirror an attachment's metadata into chrome.storage so the extension UI can
   // render it without waiting for the next server pull. The file already lives on
@@ -406,7 +566,7 @@ class VibeAnnotationsBackground {
       if (idx === -1) return;
       const cur = Array.isArray(annotations[idx].attachments) ? annotations[idx].attachments : [];
       const next = att.kind === 'capture'
-        ? [att, ...cur.filter(a => a.kind !== 'capture')]
+        ? [att, ...cur.filter(a => a.kind !== 'capture' || a.local_only)]
         : [...cur.filter(a => a.id !== att.id), att];
       annotations[idx] = { ...annotations[idx], attachments: next };
       await chrome.storage.local.set({ annotations });

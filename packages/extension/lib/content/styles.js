@@ -161,6 +161,46 @@ export const VIBE_STYLES = `
   margin-bottom: 0;
 }
 
+/* ===== Region capture (manual screenshot area) ===== */
+.vibe-region-shade {
+  position: fixed;
+  inset: 0;
+  pointer-events: auto;
+  cursor: crosshair;
+  user-select: none;
+}
+/* Full-page dim, shown until the drag starts — then the selection rect dims the
+   surroundings itself, leaving a clear hole to shoot. */
+.vibe-region-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 12, 16, 0.45);
+  pointer-events: none;
+}
+.vibe-region-rect {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  border: 1px solid var(--v-accent);
+  box-shadow: 0 0 0 9999px rgba(10, 12, 16, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+.vibe-region-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(15, 17, 21, 0.92);
+  color: #fff;
+  font-family: var(--v-font);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
 /* ===== Badges (numbered pins) ===== */
 .vibe-badge {
   position: fixed;
@@ -2393,5 +2433,17 @@ export const VIBE_STYLES = `
 .vibe-variant-chosen-mark { margin-left: auto; font: 600 10.5px/1 var(--v-font); color: var(--v-status-online); }
 .vibe-viewall-variants .vibe-btn { align-self: flex-start; padding: 5px 12px; font-size: 12px; }
 .vibe-viewall-variant-note { font-size: 11.5px; color: var(--v-text-secondary); }
+
+/* Local screenshots use the existing card rather than a network image viewer. */
+.vibe-attachment-status, .vibe-attachments-notice {
+  margin: 6px 0; font: 400 11px/1.4 var(--v-font); color: var(--v-text-secondary);
+}
+.vibe-attachment-status:empty { display: none; }
+.vibe-local-preview {
+  position: absolute; inset: 0; z-index: 2; padding: 12px; overflow: auto;
+  border-radius: inherit; background: var(--v-surface-1); color: var(--v-text-primary);
+}
+.vibe-local-preview img { display: block; max-width: 100%; height: auto; margin-top: 12px; }
+.vibe-local-preview a { display: inline-block; margin-left: 8px; }
 
 `;
