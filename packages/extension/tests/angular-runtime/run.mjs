@@ -45,7 +45,11 @@ try {
   await page.waitForFunction(() => window.fixtureReady && document.querySelector('[data-testid="lazy"]'));
   if (observe) {
     const source = await readFile(join(extension, 'entrypoints/bridge.content.js'), 'utf8');
-    await page.addScriptTag({ content: 'const defineContentScript = x => x;\n' + source.replace('export default', 'window.fixtureBridge =') + '\nwindow.fixtureBridge.main();' });
+    const bridge = await build({
+      stdin: { contents: 'const defineContentScript = x => x;\n' + source.replace('export default', 'const fixtureBridge =') + '\nfixtureBridge.main();', resolveDir: join(extension, 'entrypoints') },
+      bundle: true, write: false, format: 'iife',
+    });
+    await page.addScriptTag({ content: bridge.outputFiles[0].text });
   } else {
     await page.waitForFunction(() => window.__vibeAnnotations);
   }

@@ -1,5 +1,7 @@
 // Manual region capture: resolve with a viewport CSS box or null when cancelled.
 import VibeShadowHost from './shadow-host.js';
+import VibeGestureGuard from './gesture-guard.js';
+import VibeEvents from './event-bus.js';
 
 const MIN_SIZE = 4;
 let active = null;
@@ -32,6 +34,8 @@ function start({ onCancel: notifyCancellation } = {}) {
   if (active) return active.promise;
   const root = VibeShadowHost.getRoot();
   if (!root) return Promise.resolve(null);
+  VibeShadowHost.promote();
+  VibeShadowHost.setInteraction({ region: true });
 
   let resolveSelection;
   const promise = new Promise(resolve => { resolveSelection = resolve; });
@@ -76,13 +80,6 @@ function start({ onCancel: notifyCancellation } = {}) {
     hint.textContent = `${Math.round(box.width)} × ${Math.round(box.height)} · release to capture · Esc to cancel`;
   }
 
-  function swallowTrailingInteraction() {
-    const types = ['click', 'mouseup', 'pointerup', 'dblclick', 'auxclick', 'contextmenu'];
-    const swallow = event => { event.preventDefault(); event.stopImmediatePropagation(); };
-    const detach = () => types.forEach(type => window.removeEventListener(type, swallow, true));
-    types.forEach(type => window.addEventListener(type, swallow, true));
-    setTimeout(detach, 400);
-  }
 
   function cleanup(result, reason) {
     if (settled) return;
@@ -108,6 +105,7 @@ function start({ onCancel: notifyCancellation } = {}) {
     }
     shade.remove();
     active = null;
+    VibeShadowHost.setInteraction({ region: false });
     if (reason) notifyCancellation?.(reason);
     resolveSelection(result);
   }
@@ -132,6 +130,7 @@ function start({ onCancel: notifyCancellation } = {}) {
     if (!event.isPrimary || event.button !== 0 || pointerId !== null) return;
     event.preventDefault();
     pointerId = event.pointerId;
+    VibeGestureGuard.begin(event);
     anchorX = event.clientX;
     anchorY = event.clientY;
     dim.style.display = 'none';
@@ -151,7 +150,6 @@ function start({ onCancel: notifyCancellation } = {}) {
     const box = boxFrom(anchorX, anchorY, event.clientX, event.clientY);
     pointerId = null;
     if (box.width < MIN_SIZE || box.height < MIN_SIZE) {
-      swallowTrailingInteraction();
       cleanup(null, 'Select a region at least 4 CSS pixels wide and high.');
       return;
     }
@@ -159,18 +157,20 @@ function start({ onCancel: notifyCancellation } = {}) {
       cancel('Region selection cancelled because the page viewport, scroll position, or zoom changed.');
       return;
     }
-    swallowTrailingInteraction();
     cleanup({ ...box, viewport: geometry });
   }
 
   function onCancel(event) {
     if (event.pointerId !== pointerId) return;
-    swallowTrailingInteraction();
+    VibeGestureGuard.clear();
     cancel('Region selection cancelled because the pointer interaction was interrupted.');
   }
 
   function onLostCapture(event) {
-    if (event.pointerId === pointerId) cancel('Region selection cancelled because pointer capture was lost.');
+    if (event.pointerId === pointerId) {
+      VibeGestureGuard.clear();
+      cancel('Region selection cancelled because pointer capture was lost.');
+    }
   }
 
   function onBlur(event) {
@@ -215,5 +215,6 @@ function cancel(reason) {
   active?.cancel(reason || 'Region selection cancelled.');
 }
 
+VibeEvents.on('ui:deactivate', () => cancel());
 const VibeRegionCapture = { start, isActive, cancel };
 export default VibeRegionCapture;

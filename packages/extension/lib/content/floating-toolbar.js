@@ -846,87 +846,9 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
   function updateUI() {
     if (!toolbarEl) return;
 
-    // --- Annotating mode morph (crossfade + width transition) ---
-    const wasAnnotating = toolbarEl.classList.contains('annotating');
-    const middleEl = toolbarEl.querySelector('.vibe-toolbar-middle');
-    const defaultEl = toolbarEl.querySelector('.vibe-toolbar-default');
-    const annotatingEl = toolbarEl.querySelector('.vibe-toolbar-annotating');
-
-    if (isAnnotating && !wasAnnotating && middleEl && defaultEl && annotatingEl) {
-      // Measure current width, then target width
-      const startWidth = middleEl.offsetWidth;
-      annotatingEl.style.position = 'relative';
-      annotatingEl.style.opacity = '0';
-      annotatingEl.style.visibility = 'hidden';
-      const endWidth = annotatingEl.scrollWidth;
-      annotatingEl.style.position = '';
-      annotatingEl.style.opacity = '';
-      annotatingEl.style.visibility = '';
-
-      // Phase 1: fade out old content
-      middleEl.style.overflow = 'hidden';
-      middleEl.style.width = startWidth + 'px';
-      middleEl.style.transition = 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
-      defaultEl.style.transition = 'opacity 0.2s ease';
-      defaultEl.style.opacity = '0';
-
-      // Phase 2: swap layout + animate width
-      setTimeout(() => {
-        toolbarEl.classList.add('annotating');
-        middleEl.style.width = endWidth + 'px';
-      }, 200);
-
-      // Phase 3: fade in new content (delayed so it appears after width settles)
-      setTimeout(() => {
-        annotatingEl.style.transition = 'opacity 0.25s ease';
-      }, 250);
-
-      // Cleanup
-      setTimeout(() => {
-        middleEl.style.width = ''; middleEl.style.transition = ''; middleEl.style.overflow = '';
-        defaultEl.style.transition = '';
-        annotatingEl.style.transition = '';
-      }, 500);
-
-    } else if (!isAnnotating && wasAnnotating && middleEl && defaultEl && annotatingEl) {
-      const startWidth = middleEl.offsetWidth;
-
-      // Phase 1: fade out annotating content
-      annotatingEl.style.transition = 'opacity 0.2s ease';
-      annotatingEl.style.opacity = '0';
-
-      // Measure target
-      defaultEl.style.position = 'relative';
-      defaultEl.style.opacity = '0';
-      defaultEl.style.visibility = 'hidden';
-      defaultEl.style.height = '';
-      defaultEl.style.overflow = '';
-      const endWidth = defaultEl.scrollWidth;
-      defaultEl.style.position = '';
-      defaultEl.style.visibility = '';
-
-      middleEl.style.overflow = 'hidden';
-      middleEl.style.width = startWidth + 'px';
-      middleEl.style.transition = 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
-
-      // Phase 2: swap layout + animate width
-      setTimeout(() => {
-        toolbarEl.classList.remove('annotating');
-        annotatingEl.style.opacity = '';
-        annotatingEl.style.transition = '';
-        defaultEl.style.transition = 'opacity 0.25s ease';
-        defaultEl.style.opacity = '0';
-        middleEl.style.width = endWidth + 'px';
-        // Phase 3: fade in default content
-        requestAnimationFrame(() => { defaultEl.style.opacity = ''; });
-      }, 200);
-
-      // Cleanup
-      setTimeout(() => {
-        middleEl.style.width = ''; middleEl.style.transition = ''; middleEl.style.overflow = '';
-        defaultEl.style.transition = '';
-      }, 500);
-    }
+    // Mode is synchronous. A delayed class swap can outlive Escape/disable and
+    // leave the toolbar showing "annotating" after inspection has already stopped.
+    toolbarEl.classList.toggle('annotating', isAnnotating);
 
     // --- Count pill on View all ---
     const totalCount = annotationCount + styleAnnotationCount;

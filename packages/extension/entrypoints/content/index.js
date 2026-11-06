@@ -235,6 +235,7 @@ function setupRouteChangeDetection() {
     const newURL = window.location.href;
     if (newURL === currentURL) return;
     currentURL = newURL;
+    VibeEvents.emit('ui:deactivate');
     reloadAnnotationsForCurrentRoute();
   }
 
@@ -294,10 +295,6 @@ function setupKeyboardShortcuts() {
   });
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && VibeInspectionMode.isActive()) {
-      VibeEvents.emit('inspection:stop');
-      return;
-    }
 
     if (shouldTriggerHotkey(e, customShortcut)) {
       e.preventDefault();

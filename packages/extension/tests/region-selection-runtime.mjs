@@ -11,8 +11,6 @@ const bundle = await build({ stdin: { contents: `import host from './lib/content
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
 const start = async () => {
-  // The old trailing guard is stage 4 scope, not this lifecycle test's contract.
-  await page.waitForTimeout(450);
   await page.evaluate(() => { document.querySelector('#original').focus(); window.result = 'pending'; region.start().then(box => { window.result = box; }); });
   await page.locator('.vibe-region-shade').waitFor();
 };
@@ -28,8 +26,18 @@ const drag = async (from, to) => {
 try {
   await page.setContent('<!doctype html><style>body{margin:0;min-height:2400px}</style><button id="original">Original focus</button>');
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
+  await page.evaluate(() => {
+    window.appClicks = 0;
+    document.querySelector('#original').addEventListener('click', () => window.appClicks++);
+  });
+  await start(); await page.mouse.move(100,100); await page.mouse.down();
+  await page.waitForTimeout(900);
+  await page.mouse.move(200,200); await page.mouse.up(); await result();
+  await page.locator('#original').click();
+  assert.equal(await page.evaluate(() => window.appClicks), 1, 'next independent click is not swallowed after a long region gesture');
   // Lost capture must cancel, rather than leave an overlay waiting forever.
   await start(); await page.mouse.move(100, 100); await page.mouse.down();
+  await page.mouse.move(100, 101); // Apply pending capture before deliberately losing it.
   await page.locator('.vibe-region-shade').evaluate(el => el.releasePointerCapture(1));
   await page.mouse.move(101, 101);
   assert.equal(await result(), null, 'lostpointercapture cancels');

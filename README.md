@@ -67,10 +67,9 @@ with Chromium installed. The runner uses a temporary persistent profile, blocks 
 HTTP requests, and exercises real Angular/Material, bridge storage and popover Save.
 The production fixture is an optimized JIT bundle, not an Angular CLI AOT-build test.
 
-Angular reader (stage 1), durable manual screenshots (stage 2), and the local
-capture/export path (stage 3) are implemented. This is not a release or a claim
-of intermediate-version compatibility. Material Dialog/EventTarget/focus/top-layer
-isolation is still stage 4, not implied by successful capture.
+Angular reader, durable manual screenshots, local capture/export, and stage-4
+Material interaction isolation are implemented. This is not a release, final
+integration acceptance, or a claim of intermediate-version compatibility.
 
 ### Manual local screenshots
 
@@ -134,12 +133,56 @@ checks the sender tab/focused window and stable viewport/zoom across capture;
 bitmap dimensions, not DPR alone, determine cropped pixel bounds. The browser
 grid fixture covers DPR 1/1.25/2, zoom 80/100/125%, scroll, pinch scale 1.5,
 fixed/sticky elements and in-flight tab/window/scroll/zoom/decode failures.
-The inherited 400 ms region click guard remains: this is **not** event isolation.
-Stage 4 must replace the guard and verify real Material Dialog focus/top layer.
+Selection guards follow the selecting pointer ID through release/click, not a
+400–700 ms click blackout. Long holds remain owned; the next pointerdown is
+independent. Only a missing post-release click needs a 1500 ms cleanup watchdog.
 
 The unpacked extension is named **vibe-remarker** and uses `logo.png` for its
 generated 16/32/48/128 px icons and toolbar artwork. The package/server names
 and existing storage format are unchanged.
+
+### Modal UI compatibility
+
+The actual extension UI was exercised with Angular 17.3.12/Material-CDK 17.3.10
+and Angular 20.0.0/Material-CDK 20.0.4 in Chromium 156. Both CDK versions use
+ordinary overlay containers; separate native popover and modal-dialog cases
+exercise the browser top layer. The extension uses a **manual nonmodal popover**,
+never `showModal()`. Inside an active native modal, the same host is moved into
+that modal to avoid native inertness, then promoted above its surface.
+`moveBefore()` preserves state where available; the fallback reopens the popover.
+
+Escape cancels region selection first, then closes the card/inspection mode;
+the next Escape belongs to the application. Card Tab/Shift+Tab stays inside its
+controls. Closing restores a connected page target or a safe dialog control.
+The application's focus trap is not disabled. Toolbar mode changes are
+synchronous; CSS owns the crossfade so stale timers cannot reopen annotation mode.
+
+The document-start MAIN wrapper filters interactive listeners only on
+window/document/body/html, using the registered host **object**, not an ID lookup.
+Inactive UI and ordinary page events pass through. Duplicate/remove/once,
+reentrancy, dynamic object `handleEvent`, passive options, AbortSignal, original
+event/receiver/order and callback errors are covered by browser regressions.
+Remove/once/abort release callback references, checked with browser GC/WeakRef.
+
+This is compatibility isolation, **not a security boundary** against hostile page
+JavaScript. Preinstalled listeners, saved native methods, property handlers and
+capture listeners on other ancestors can bypass it. Late site enablement cannot
+retroactively wrap existing listeners. The target application's exact CDK version
+still needs its own acceptance run before release; intermediate versions are unproven.
+
+```sh
+ANGULAR_DEPS=/path/to/angular17 node packages/extension/tests/material-interaction-runtime.mjs
+ANGULAR_DEPS=/path/to/angular20 node packages/extension/tests/material-interaction-runtime.mjs
+ANGULAR_DEPS=/path/to/dependencies node packages/extension/tests/event-target-runtime.mjs
+```
+
+These runners load the built extension in temporary persistent profiles without
+MCP. The Material runner uses real editor/IME/clipboard/pointer input and checks
+two dialogs, backdrop, focus, top-layer hit testing, repeat/SPA/disable cleanup.
+It bypasses the permission prompt and rejects capture at the worker API boundary:
+it is interaction acceptance, not a replacement for the real GUI permission/WebP
+checks above. The EventTarget runner also checks repeat injection over a later
+page patch and documents the native bypass boundaries.
 
 
 ## Contributing

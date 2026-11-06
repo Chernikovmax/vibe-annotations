@@ -6,6 +6,7 @@ import VibeEvents from './event-bus.js';
 import VibeShadowDOMUtils from './shadow-dom-utils.js';
 import VibeShadowHost from './shadow-host.js';
 import VibeElementContext from './element-context.js';
+import VibeGestureGuard from './gesture-guard.js';
 
   let active = false;
   let highlightEl = null;
@@ -26,6 +27,7 @@ import VibeElementContext from './element-context.js';
   function init() {
     VibeEvents.on('inspection:start', start);
     VibeEvents.on('inspection:stop', stop);
+    VibeEvents.on('ui:deactivate', stop);
   }
 
   function start() {
@@ -33,6 +35,8 @@ import VibeElementContext from './element-context.js';
     active = true;
 
     const root = VibeShadowHost.getRoot();
+    VibeShadowHost.promote();
+    VibeShadowHost.setInteraction({ inspecting: true });
     if (!root) return;
 
     // Create highlight overlay + its selector label (a child so it rides along)
@@ -56,12 +60,11 @@ import VibeElementContext from './element-context.js';
     document.addEventListener('mouseover', onMouseOver, true);
     document.addEventListener('mouseout', onMouseOut, true);
     document.addEventListener('pointermove', onPointerMove, true);
-    document.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('mousedown', onMouseDown, true);
     document.addEventListener('click', onClick, true);
-    document.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keydown', onKeyDown, true);
     listenersAttached = true;
-    attachTrailingGuards();
     const cursorStyle = document.createElement('style');
     cursorStyle.setAttribute('data-vibe-cursor', '');
     cursorStyle.textContent = '*, *::before, *::after { cursor: crosshair !important; }';
@@ -79,10 +82,10 @@ import VibeElementContext from './element-context.js';
       document.removeEventListener('mouseover', onMouseOver, true);
       document.removeEventListener('mouseout', onMouseOut, true);
       document.removeEventListener('pointermove', onPointerMove, true);
-      document.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('mousedown', onMouseDown, true);
       document.removeEventListener('click', onClick, true);
-      document.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('keydown', onKeyDown, true);
       listenersAttached = false;
     }
     onMouseOver = onMouseOut = onPointerMove = onPointerDown = onMouseDown = onClick = onKeyDown = null;
@@ -99,8 +102,8 @@ import VibeElementContext from './element-context.js';
     const cursorStyle = document.querySelector('[data-vibe-cursor]');
     if (cursorStyle) cursorStyle.remove();
 
-    detachTrailingGuards();
-    guardUntil = 0;
+    VibeGestureGuard.clear();
+    VibeShadowHost.setInteraction({ inspecting: false });
 
     VibeEvents.emit('inspection:stopped');
   }
@@ -111,38 +114,7 @@ import VibeElementContext from './element-context.js';
 
   let listenersAttached = false;
 
-  // Selecting an element ends inspection for the current interaction, but the browser
-  // keeps dispatching pointerup/mouseup/click to the page right after. Without a guard
-  // those reach the app — a modal backdrop closes the very dialog the annotation was
-  // made on. So these listeners outlive tempDisable() and swallow only the tail of the
-  // interaction that selected an element.
-  const TRAILING_EVENT_TYPES = ['pointerup', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu'];
-  const TRAILING_GUARD_MS = 700;
-  let guardUntil = 0;
-  let guardListeners = null;
-
-  function armTrailingGuards() {
-    guardUntil = performance.now() + TRAILING_GUARD_MS;
-  }
-
-  function attachTrailingGuards() {
-    if (guardListeners) return;
-    guardListeners = TRAILING_EVENT_TYPES.map((type) => {
-      const handler = (e) => {
-        if (!active || isOurUI(e) || performance.now() > guardUntil) return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-      };
-      window.addEventListener(type, handler, true);
-      return [type, handler];
-    });
-  }
-
-  function detachTrailingGuards() {
-    if (!guardListeners) return;
-    for (const [type, handler] of guardListeners) window.removeEventListener(type, handler, true);
-    guardListeners = null;
-  }
+  // The pointer-id tail guard outlives tempDisable, but not stop/disable.
 
   // --- Shadow-aware target resolution ---
 
@@ -175,14 +147,15 @@ import VibeElementContext from './element-context.js';
 
   function tempDisable() {
     // Remove listeners but keep active=true so we can re-enable
+    VibeShadowHost.setInteraction({ inspecting: false });
     if (listenersAttached) {
       document.removeEventListener('mouseover', onMouseOver, true);
       document.removeEventListener('mouseout', onMouseOut, true);
       document.removeEventListener('pointermove', onPointerMove, true);
-      document.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('mousedown', onMouseDown, true);
       document.removeEventListener('click', onClick, true);
-      document.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('keydown', onKeyDown, true);
       listenersAttached = false;
     }
     if (highlightEl) highlightEl.style.display = 'none';
@@ -193,13 +166,15 @@ import VibeElementContext from './element-context.js';
 
   function reEnable() {
     if (!active || listenersAttached) return;
+    VibeShadowHost.promote();
+    VibeShadowHost.setInteraction({ inspecting: true });
     document.addEventListener('mouseover', onMouseOver, true);
     document.addEventListener('mouseout', onMouseOut, true);
     document.addEventListener('pointermove', onPointerMove, true);
-    document.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('mousedown', onMouseDown, true);
     document.addEventListener('click', onClick, true);
-    document.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keydown', onKeyDown, true);
     listenersAttached = true;
   }
 
@@ -249,6 +224,7 @@ import VibeElementContext from './element-context.js';
   // Element selection on pointerdown — fires before frameworks can react
   function handlePointerDown(e) {
     if (!active || isOurUI(e)) return;
+    if (!e.isPrimary || e.button !== 0) return;
 
     e.preventDefault();
     e.stopImmediatePropagation();
@@ -258,13 +234,19 @@ import VibeElementContext from './element-context.js';
     if (!target || target === document.body || target === document.documentElement) return;
 
     tempDisable();
-    armTrailingGuards();
+    VibeGestureGuard.begin(e);
     VibeEvents.emit('inspection:elementClicked', { element: target, clientX: e.clientX, clientY: e.clientY });
   }
 
   // Arrow key DOM navigation — ↑ parent, ↓ retrace path back to anchor
   function handleKeyDown(e) {
     if (!active) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      stop();
+      return;
+    }
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown' && e.key !== 'Enter') return;
 
     // Always handle these keys in inspection mode, even if focus is on our toolbar
@@ -282,7 +264,6 @@ import VibeElementContext from './element-context.js';
     if (e.key === 'Enter') {
       const rect = current.getBoundingClientRect();
       tempDisable();
-      armTrailingGuards();
       VibeEvents.emit('inspection:elementClicked', {
         element: current,
         clientX: rect.left + rect.width / 2,

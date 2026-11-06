@@ -1418,7 +1418,7 @@ export const VIBE_STYLES = `
 }
 
 /* Default vs Annotating mode containers */
-/* Annotating mode morph — the middle section crossfades + width transitions */
+/* Mode state is synchronous; CSS owns the cancellable crossfade. */
 .vibe-toolbar-middle {
   position: relative;
   display: flex;
@@ -1431,7 +1431,7 @@ export const VIBE_STYLES = `
   display: flex;
   align-items: center;
   white-space: nowrap;
-  /* Opacity transitions are driven by JS for precise sequencing */
+  transition: opacity 0.2s ease;
 }
 
 .vibe-toolbar-default {

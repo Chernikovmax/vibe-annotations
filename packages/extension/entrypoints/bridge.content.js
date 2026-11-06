@@ -3,6 +3,8 @@
 // browser-automation tools. Communicates with the content-script (ISOLATED) world via
 // CustomEvents handled in lib/content/bridge-handler.js.
 
+import { installUiEventIsolation } from '../lib/main/ui-event-isolation.js';
+
 export default defineContentScript({
   matches: [
     'http://localhost/*',
@@ -24,8 +26,6 @@ export default defineContentScript({
   main() {
     if (window.__vibeAnnotations) return;
 
-    // Install before the page registers any listener (document_start), so modal
-    // frameworks never learn that our overlay exists — see installUiEventIsolation().
     installUiEventIsolation();
 
     const TIMEOUT = 5000;
@@ -54,120 +54,6 @@ export default defineContentScript({
           }),
         );
       });
-    }
-
-    // --- Extension-UI event isolation ---
-    //
-    // Everything the extension renders lives inside one host element inside a shadow
-    // root. Page code must never see interactions with it: a modal dialog (Angular
-    // Material's MatDialog, for one) closes on a document-level outside pointerdown
-    // and its focus trap pulls focus back into the dialog — both fire on every click
-    // or keystroke inside our popover, which makes annotating anything under a modal
-    // overlay impossible (the dialog closes, or you cannot type).
-    //
-    // Shadow DOM retargets, it does not isolate: composed events still travel to
-    // document/window listeners. So wrap page listeners bound to the few targets that
-    // are ancestors of our host and drop events whose path passes through it. Only
-    // document/window/body/html need wrapping, and only for interaction types, which
-    // keeps the per-event cost off the page's own element listeners.
-    const VIBE_HOST_ID = 'vibe-annotations-root';
-    const ISOLATED_EVENT_TYPES = new Set([
-      'pointerdown', 'pointerup', 'pointermove', 'pointercancel',
-      'mousedown', 'mouseup', 'mousemove', 'mouseover', 'mouseout',
-      'click', 'dblclick', 'auxclick', 'contextmenu',
-      'touchstart', 'touchmove', 'touchend', 'touchcancel',
-      'keydown', 'keyup', 'keypress',
-      'focus', 'blur', 'focusin', 'focusout',
-      'input', 'change', 'submit',
-      'wheel', 'scroll',
-      'dragstart', 'drag', 'dragend', 'drop',
-    ]);
-
-    function installUiEventIsolation() {
-      const proto = EventTarget.prototype;
-      const origAdd = proto.addEventListener;
-      const origRemove = proto.removeEventListener;
-      if (origAdd.__vibeIsolation) return;
-
-      // target → `${type}|${capture}` → Map(original listener → wrapped listener)
-      const registry = new WeakMap();
-
-      function isPageRoot(target) {
-        return target === document || target === window
-          || target === document.body || target === document.documentElement;
-      }
-
-      function isFromVibe(event) {
-        const host = document.getElementById(VIBE_HOST_ID);
-        if (!host) return false;
-        if (event.target === host) return true; // retargeted to the shadow host
-        let path;
-        try { path = event.composedPath ? event.composedPath() : null; } catch { path = null; }
-        return !!(path && path.includes(host));
-      }
-
-      function normalize(options) {
-        if (typeof options === 'boolean') return { capture: options, once: false, passive: undefined };
-        const o = options || {};
-        return { capture: !!o.capture, once: !!o.once, passive: o.passive };
-      }
-
-      function remember(target, key, original, wrapped) {
-        let byKey = registry.get(target);
-        if (!byKey) { byKey = new Map(); registry.set(target, byKey); }
-        let byListener = byKey.get(key);
-        if (!byListener) { byListener = new Map(); byKey.set(key, byListener); }
-        byListener.set(original, wrapped);
-      }
-
-      function forget(target, key, original) {
-        const byKey = registry.get(target);
-        const byListener = byKey && byKey.get(key);
-        if (!byListener) return undefined;
-        const wrapped = byListener.get(original);
-        byListener.delete(original);
-        return wrapped;
-      }
-
-      proto.addEventListener = function (type, listener, options) {
-        const name = String(type);
-        if (!listener || !ISOLATED_EVENT_TYPES.has(name) || !isPageRoot(this)) {
-          return origAdd.call(this, type, listener, options);
-        }
-        const opts = normalize(options);
-
-        let invoke;
-        if (typeof listener === 'function') {
-          invoke = listener;
-        } else if (typeof listener.handleEvent === 'function') {
-          invoke = listener.handleEvent.bind(listener);
-        } else {
-          return origAdd.call(this, type, listener, options);
-        }
-
-        const wrapped = function (event) {
-          // Our own UI → the page stays unaware. A `once` listener that swallowed
-          // nothing must stay armed, so it is removed manually only after a real call.
-          if (isFromVibe(event)) return;
-          if (opts.once) origRemove.call(this, type, wrapped, opts.capture);
-          return invoke.call(this, event);
-        };
-        wrapped.__vibeOriginal = listener;
-
-        remember(this, name + '|' + opts.capture, listener, wrapped);
-        return origAdd.call(this, type, wrapped, { capture: opts.capture, passive: opts.passive, once: false });
-      };
-      proto.addEventListener.__vibeIsolation = true;
-
-      proto.removeEventListener = function (type, listener, options) {
-        const name = String(type);
-        if (!listener || !ISOLATED_EVENT_TYPES.has(name) || !isPageRoot(this)) {
-          return origRemove.call(this, type, listener, options);
-        }
-        const opts = normalize(options);
-        const wrapped = forget(this, name + '|' + opts.capture, listener);
-        return origRemove.call(this, type, wrapped || listener, options);
-      };
     }
 
     window.__vibeAnnotations = {

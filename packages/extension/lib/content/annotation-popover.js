@@ -24,6 +24,37 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
   let activeOriginalCssText = null;
   let activeCssRulesStyleEl = null;
   let activeAttachmentSession = null;
+  let pendingOpen = 0;
+  let returnFocusTarget = null;
+
+  function restorePageFocus() {
+    let target = returnFocusTarget;
+    returnFocusTarget = null;
+    if (!target?.isConnected || !target.getClientRects().length) {
+      const dialogs = [...document.querySelectorAll('dialog[open], [role="dialog"], .cdk-dialog-container')].filter(el => el.getClientRects().length);
+      const dialog = dialogs.at(-1);
+      target = dialog?.querySelector('button:not([disabled]), input:not([disabled]), [tabindex="0"]') || dialog;
+    }
+    target?.focus({ preventScroll: true });
+  }
+
+  function cardKeyDown(event) {
+    if (VibeRegionCapture.isActive()) return; // Region owns this Escape first.
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (VibeInspectionMode.isActive()) VibeInspectionMode.stop();
+      else dismiss();
+    } else if (event.key === 'Tab' && currentPopover?.contains(event.composedPath()[0])) {
+      const controls = [...currentPopover.querySelectorAll('button, input, textarea, select, a[href], [tabindex]')]
+        .filter(el => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+      if (!controls.length) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const current = controls.indexOf(VibeShadowHost.getRoot().activeElement);
+      controls[(current + (event.shiftKey ? controls.length - 1 : 1)) % controls.length].focus();
+    }
+  }
 
   const P = VibePopoverPanels; // shorthand
 
@@ -57,26 +88,36 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
   function init() {
     VibeEvents.on('inspection:elementClicked', onElementClicked);
     VibeEvents.on('annotation:edit', onEditRequested);
+    const deactivate = () => { pendingOpen++; dismiss(); };
+    VibeEvents.on('ui:deactivate', deactivate);
+    VibeEvents.on('inspection:stopped', deactivate);
   }
 
   async function onElementClicked({ element, clientX, clientY }) {
+    const request = ++pendingOpen;
     const context = await VibeElementContext.generate(element);
-    show(element, context, null, clientX, clientY);
+    if (request === pendingOpen && VibeShadowHost.isVisible()) show(element, context, null, clientX, clientY);
   }
 
   async function onEditRequested({ annotation, element }) {
     VibeInspectionMode.tempDisable();
+    const request = ++pendingOpen;
     const context = await VibeElementContext.generate(element);
-    show(element, context, annotation);
+    if (request === pendingOpen && VibeShadowHost.isVisible()) show(element, context, annotation);
   }
 
   // --- Show popover ---
 
   async function show(targetElement, context, existingAnnotation, clickX, clickY) {
+    const request = pendingOpen;
     if (await dismiss() === false) return;
+    if (request !== pendingOpen || !VibeShadowHost.isVisible() || !targetElement.isConnected) return;
 
     const root = VibeShadowHost.getRoot();
     if (!root) return;
+    VibeShadowHost.promote();
+    returnFocusTarget = targetElement.tabIndex >= 0 ? targetElement : document.activeElement;
+    if (returnFocusTarget === VibeShadowHost.getHost()) returnFocusTarget = targetElement.closest('dialog, [role="dialog"], .cdk-dialog-container');
 
     const isEdit = !!existingAnnotation;
     const isFile = VibeAPI.isFileProtocol();
@@ -827,18 +868,8 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
     popover._updateResetVisibility = updateResetVisibility;
     updateSave();
 
-    // Focus textarea
-    const prevActive = document.activeElement;
-    const blurBlocker = (e) => {
-      if (e.target === prevActive) { e.stopImmediatePropagation(); e.stopPropagation(); }
-    };
-    document.addEventListener('blur', blurBlocker, true);
-    document.addEventListener('focusout', blurBlocker, true);
-    textarea.focus();
+    textarea.focus({ preventScroll: true });
     if (isEdit) textarea.select();
-    document.removeEventListener('blur', blurBlocker, true);
-    document.removeEventListener('focusout', blurBlocker, true);
-    textarea.addEventListener('pointerdown', () => textarea.focus());
 
     // Cancel / close
     const close = () => dismiss(true);
@@ -849,14 +880,14 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
 
     // ESC / Cmd+Enter
     escHandler = (e) => {
-      if (e.key === 'Escape') {
-        close();
+      if (e.key === 'Escape' || e.key === 'Tab') {
+        cardKeyDown(e);
       } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !saveBtn.disabled) {
         e.preventDefault();
         saveBtn.click();
       }
     };
-    document.addEventListener('keydown', escHandler);
+    window.addEventListener('keydown', escHandler, true);
 
     // Delete
     if (deleteBtn && isEdit) {
@@ -974,8 +1005,8 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
       wireDragHandle(popover.querySelector('.vibe-drag-handle'), popover);
       popover.querySelector('.vibe-cancel-btn').addEventListener('click', close);
       anchor.addEventListener('pointerdown', (e) => { if (e.target === anchor) close(); });
-      escHandler = (e) => { if (e.key === 'Escape') close(); };
-      document.addEventListener('keydown', escHandler);
+      escHandler = cardKeyDown;
+      window.addEventListener('keydown', escHandler, true);
       return;
     }
 
@@ -1019,8 +1050,8 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
 
     popover.querySelector('.vibe-cancel-btn').addEventListener('click', close);
     anchor.addEventListener('pointerdown', (e) => { if (e.target === anchor) close(); });
-    escHandler = (e) => { if (e.key === 'Escape') close(); };
-    document.addEventListener('keydown', escHandler);
+    escHandler = cardKeyDown;
+    window.addEventListener('keydown', escHandler, true);
 
     const chooseBtn = popover.querySelector('.vibe-variants-choose');
     const hint = popover.querySelector('.vibe-variants-hint');
@@ -1106,7 +1137,8 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
     if (currentPopover) { currentPopover.remove(); currentPopover = null; }
     stopHighlightRAF();
     if (currentTargetHighlight) { currentTargetHighlight.remove(); currentTargetHighlight = null; }
-    if (escHandler) { document.removeEventListener('keydown', escHandler); escHandler = null; }
+    if (escHandler) { window.removeEventListener('keydown', escHandler, true); escHandler = null; }
+    if (hadPopover) restorePageFocus();
     activeElement = null;
     activeExistingAnnotation = null;
     activeElType = null;
