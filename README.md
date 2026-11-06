@@ -67,9 +67,10 @@ with Chromium installed. The runner uses a temporary persistent profile, blocks 
 HTTP requests, and exercises real Angular/Material, bridge storage and popover Save.
 The production fixture is an optimized JIT bundle, not an Angular CLI AOT-build test.
 
-Angular stage 1 and the local screenshot/storage stage 2 are implemented locally.
-This is not a release or a claim of intermediate-version compatibility. Markdown/ZIP
-export, sensitive-field review and modal/EventTarget isolation remain deferred.
+Angular reader (stage 1), durable manual screenshots (stage 2), and the local
+capture/export path (stage 3) are implemented. This is not a release or a claim
+of intermediate-version compatibility. Material Dialog/EventTarget/focus/top-layer
+isolation is still stage 4, not implied by successful capture.
 
 ### Manual local screenshots
 
@@ -84,9 +85,20 @@ bytes to extension-origin IndexedDB before confirming the attachment. Draft IDs 
 stable across capture and Save retries. Save awaits binding and chrome.storage
 publication; failed writes are visible and retain retryable images.
 
-Preview and **Save image** work without MCP. The optional annotation sync excludes
-local-only references and preserves them when merging remote text changes. MCP
-cannot read these images: copying annotation text does not transfer image bytes.
+Preview and **Save image** work without MCP. In **View all → Share / Export**,
+review each selected annotation, its DOM/Angular fields, and image previews;
+uncheck sensitive fields or images, then download a ZIP containing
+`annotations.json`, `annotations.md`, and actual `attachments/<id>.webp` bytes.
+JSON maps annotation IDs to attachment IDs/relative paths. Unzip it into a
+directory available to your agent and send that directory path: the agent
+cannot read extension IndexedDB, and **Copy** transmits text only. Query and
+fragment are removed from the exported URL copy, not the stored annotation.
+Missing local bytes fail the export visibly; old server attachments are labeled
+unavailable rather than given fake paths. Export does not delete originals,
+even if the old Clear after copy setting was enabled.
+
+The optional annotation sync excludes local-only references and preserves them
+when merging remote text changes. New screenshot bytes/refs do not go to MCP.
 Legacy server attachments remain separate.
 
 Cancelling a new card deletes its draft images. Cancelling an edit deletes only new
@@ -103,7 +115,10 @@ above; no MCP server needed):
 ```sh
 pnpm --filter vibe-annotations-extension build
 HEADED=1 ANGULAR_DEPS=/path/to/isolated/dependencies node packages/extension/tests/local-capture-runtime.mjs
-ANGULAR_DEPS=/path/to/isolated/dependencies node packages/extension/tests/local-attachment-sync.mjs
+node packages/extension/tests/region-selection-runtime.mjs
+node packages/extension/tests/local-export-runtime.mjs
+HEADED=1 DPR=1 node packages/extension/tests/capture-geometry-runtime.mjs
+node packages/extension/tests/local-attachment-sync.mjs
 ```
 
 Approve the **real optional host-permission prompt** in the temporary test browser.
@@ -113,12 +128,18 @@ commit and Save retry, edit cancellation, full browser restart, draft expiry,
 quotas, saved-image/annotation deletion and confirmed Settings cleanup. Sync tests
 use a recording fetch boundary rather than a real MCP endpoint.
 
-Stage 2 still uses the reference region selector and DPR-based crop geometry.
-Fractional DPR/zoom/visual viewport, complete tab/window/viewport race handling,
-region cancellation matrix and ZIP/Markdown/JSON export belong to stage 3.
-The inherited region guard swallows all clicks for 400 ms after selection; the
-storage runner waits past it rather than claiming event isolation. Stage 4 replaces
-the gesture/EventTarget/focus behavior and verifies real Material Dialogs.
+The region selector handles drag direction, viewport edges, 4 CSS px sides,
+pointer capture loss/cancel, Escape, blur, scroll and resize. The worker
+checks the sender tab/focused window and stable viewport/zoom across capture;
+bitmap dimensions, not DPR alone, determine cropped pixel bounds. The browser
+grid fixture covers DPR 1/1.25/2, zoom 80/100/125%, scroll, pinch scale 1.5,
+fixed/sticky elements and in-flight tab/window/scroll/zoom/decode failures.
+The inherited 400 ms region click guard remains: this is **not** event isolation.
+Stage 4 must replace the guard and verify real Material Dialog focus/top layer.
+
+The unpacked extension is named **vibe-remarker** and uses `logo.png` for its
+generated 16/32/48/128 px icons and toolbar artwork. The package/server names
+and existing storage format are unchanged.
 
 
 ## Contributing

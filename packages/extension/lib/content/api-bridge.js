@@ -227,21 +227,6 @@ function isServerOutdated(version) {
     } catch { /* ignore */ }
   }
 
-  async function getClearOnCopy() {
-    try {
-      const r = await chrome.storage.local.get(['vibeClearOnCopy']);
-      return !!r.vibeClearOnCopy;
-    } catch {
-      return false;
-    }
-  }
-
-  async function saveClearOnCopy(enabled) {
-    try {
-      await chrome.storage.local.set({ vibeClearOnCopy: enabled });
-    } catch { /* ignore */ }
-  }
-
   async function getBadgeColor() {
     try {
       const r = await chrome.storage.local.get(['vibeBadgeColor']);
@@ -396,8 +381,6 @@ const VibeAPI = {
   saveToolbarPosition,
   getToolbarCollapsed,
   saveToolbarCollapsed,
-  getClearOnCopy,
-  saveClearOnCopy,
   getBadgeColor,
   saveBadgeColor,
   getOverlayHidden,

@@ -1,31 +1,45 @@
-// Manual region capture: dim the page, let the user drag a rectangle, resolve with the
-// rect in CSS px (viewport coordinates) or null when cancelled.
-//
-// The interaction surface lives in the shadow root, so the page keeps its real layout
-// and our own styles apply. Because that surface is our UI, page listeners never see
-// these events (see the MAIN-world isolation patch in bridge.content.js) — dragging a
-// region over a modal dialog cannot close it.
-
+// Manual region capture: resolve with a viewport CSS box or null when cancelled.
 import VibeShadowHost from './shadow-host.js';
 
-const MIN_SIZE = 4; // CSS px — anything smaller is a stray click, not a selection
-
+const MIN_SIZE = 4;
 let active = null;
 
 function isActive() {
   return !!active;
 }
 
-function start() {
+function viewportGeometry() {
+  const visual = window.visualViewport;
+  return {
+    width: window.innerWidth,
+    height: window.innerHeight,
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+    visualWidth: visual?.width ?? window.innerWidth,
+    visualHeight: visual?.height ?? window.innerHeight,
+    visualOffsetLeft: visual?.offsetLeft ?? 0,
+    visualOffsetTop: visual?.offsetTop ?? 0,
+    visualScale: visual?.scale ?? 1,
+    dpr: window.devicePixelRatio || 1,
+  };
+}
+
+function sameGeometry(a, b) {
+  return Object.keys(a).every(key => Math.abs(a[key] - b[key]) < 0.01);
+}
+
+function start({ onCancel: notifyCancellation } = {}) {
   if (active) return active.promise;
   const root = VibeShadowHost.getRoot();
   if (!root) return Promise.resolve(null);
 
   let resolveSelection;
-  const promise = new Promise((resolve) => { resolveSelection = resolve; });
-
+  const promise = new Promise(resolve => { resolveSelection = resolve; });
+  const geometry = viewportGeometry();
   const shade = document.createElement('div');
   shade.className = 'vibe-region-shade';
+  shade.style.touchAction = 'none';
+  shade.style.overscrollBehavior = 'none';
   const dim = document.createElement('div');
   dim.className = 'vibe-region-dim';
   const rectEl = document.createElement('div');
@@ -36,17 +50,21 @@ function start() {
   shade.append(dim, rectEl, hint);
   root.appendChild(shade);
 
-  let dragging = false;
+  let pointerId = null;
   let anchorX = 0;
   let anchorY = 0;
+  let settled = false;
 
-  // Clamped to the viewport: captureVisibleTab only returns what is visible.
   function boxFrom(x1, y1, x2, y2) {
-    const left = Math.max(0, Math.min(x1, x2));
-    const top = Math.max(0, Math.min(y1, y2));
-    const right = Math.min(window.innerWidth, Math.max(x1, x2));
-    const bottom = Math.min(window.innerHeight, Math.max(y1, y2));
-    return { left, top, width: right - left, height: bottom - top };
+    const minX = geometry.visualOffsetLeft;
+    const minY = geometry.visualOffsetTop;
+    const maxX = Math.min(geometry.width, minX + geometry.visualWidth);
+    const maxY = Math.min(geometry.height, minY + geometry.visualHeight);
+    const left = Math.max(minX, Math.min(maxX, Math.min(x1, x2)));
+    const top = Math.max(minY, Math.min(maxY, Math.min(y1, y2)));
+    const right = Math.max(minX, Math.min(maxX, Math.max(x1, x2)));
+    const bottom = Math.max(minY, Math.min(maxY, Math.max(y1, y2)));
+    return { left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
   }
 
   function paint(box) {
@@ -58,85 +76,143 @@ function start() {
     hint.textContent = `${Math.round(box.width)} × ${Math.round(box.height)} · release to capture · Esc to cancel`;
   }
 
-  // pointerup is followed by a click at whatever sits under the cursor. Swallow those
-  // for a moment, or the page reacts to a drag that belonged to us (a modal backdrop
-  // closes, a button fires).
   function swallowTrailingInteraction() {
     const types = ['click', 'mouseup', 'pointerup', 'dblclick', 'auxclick', 'contextmenu'];
-    const swallow = (e) => {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    };
-    const detach = () => types.forEach((t) => window.removeEventListener(t, swallow, true));
-    types.forEach((t) => window.addEventListener(t, swallow, true));
+    const swallow = event => { event.preventDefault(); event.stopImmediatePropagation(); };
+    const detach = () => types.forEach(type => window.removeEventListener(type, swallow, true));
+    types.forEach(type => window.addEventListener(type, swallow, true));
     setTimeout(detach, 400);
   }
 
-  function cleanup(result) {
+  function cleanup(result, reason) {
+    if (settled) return;
+    settled = true;
     window.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('blur', onBlur, true);
+    window.removeEventListener('scroll', onViewportChange, true);
+    window.removeEventListener('resize', onViewportChange, true);
+    document.removeEventListener('visibilitychange', onVisibilityChange, true);
     shade.removeEventListener('pointerdown', onDown);
     shade.removeEventListener('pointermove', onMove);
     shade.removeEventListener('pointerup', onUp);
     shade.removeEventListener('pointercancel', onCancel);
+    shade.removeEventListener('lostpointercapture', onLostCapture);
+    shade.removeEventListener('wheel', preventGesture);
+    shade.removeEventListener('touchmove', preventGesture);
+    window.removeEventListener('wheel', preventGesture, true);
+    window.removeEventListener('touchmove', preventGesture, true);
+    window.visualViewport?.removeEventListener('resize', onViewportChange);
+    window.visualViewport?.removeEventListener('scroll', onViewportChange);
+    if (pointerId !== null) {
+      try { if (shade.hasPointerCapture(pointerId)) shade.releasePointerCapture(pointerId); } catch { /* pointer is gone */ }
+    }
     shade.remove();
     active = null;
+    if (reason) notifyCancellation?.(reason);
     resolveSelection(result);
   }
 
-  function finish(box) {
-    const valid = box && box.width >= MIN_SIZE && box.height >= MIN_SIZE;
-    if (valid) paint(box);
-    swallowTrailingInteraction();
-    cleanup(valid ? box : null);
+  function cancel(reason = 'Region selection cancelled.') {
+    cleanup(null, reason);
   }
 
-  function onDown(e) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    dragging = true;
-    anchorX = e.clientX;
-    anchorY = e.clientY;
-    dim.style.display = 'none'; // the rect's own shadow dims everything outside
-    try { shade.setPointerCapture(e.pointerId); } catch { /* already gone */ }
+  function onViewportChange() {
+    if (!sameGeometry(geometry, viewportGeometry())) cancel('Region selection cancelled because the page viewport, scroll position, or zoom changed.');
+  }
+
+  function onVisibilityChange() {
+    if (document.visibilityState !== 'visible') cancel('Region selection cancelled because the tab is no longer visible.');
+  }
+
+  function preventGesture(event) {
+    event.preventDefault();
+  }
+
+  function onDown(event) {
+    if (!event.isPrimary || event.button !== 0 || pointerId !== null) return;
+    event.preventDefault();
+    pointerId = event.pointerId;
+    anchorX = event.clientX;
+    anchorY = event.clientY;
+    dim.style.display = 'none';
+    try { shade.setPointerCapture(pointerId); } catch { cancel('Region selection cancelled because pointer capture was lost.'); return; }
     paint(boxFrom(anchorX, anchorY, anchorX, anchorY));
   }
 
-  function onMove(e) {
-    if (!dragging) return;
-    paint(boxFrom(anchorX, anchorY, e.clientX, e.clientY));
+  function onMove(event) {
+    if (event.pointerId !== pointerId) return;
+    event.preventDefault();
+    paint(boxFrom(anchorX, anchorY, event.clientX, event.clientY));
   }
 
-  function onUp(e) {
-    if (!dragging) return;
-    dragging = false;
-    try { shade.releasePointerCapture(e.pointerId); } catch { /* already gone */ }
-    finish(boxFrom(anchorX, anchorY, e.clientX, e.clientY));
+  function onUp(event) {
+    if (event.pointerId !== pointerId) return;
+    event.preventDefault();
+    const box = boxFrom(anchorX, anchorY, event.clientX, event.clientY);
+    pointerId = null;
+    if (box.width < MIN_SIZE || box.height < MIN_SIZE) {
+      swallowTrailingInteraction();
+      cleanup(null, 'Select a region at least 4 CSS pixels wide and high.');
+      return;
+    }
+    if (!sameGeometry(geometry, viewportGeometry())) {
+      cancel('Region selection cancelled because the page viewport, scroll position, or zoom changed.');
+      return;
+    }
+    swallowTrailingInteraction();
+    cleanup({ ...box, viewport: geometry });
   }
 
-  function onCancel() {
-    dragging = false;
-    finish(null);
+  function onCancel(event) {
+    if (event.pointerId !== pointerId) return;
+    swallowTrailingInteraction();
+    cancel('Region selection cancelled because the pointer interaction was interrupted.');
   }
 
-  function onKeyDown(e) {
-    if (e.key !== 'Escape') return;
-    e.preventDefault();
-    e.stopImmediatePropagation(); // the popover must not treat this as "close me"
-    cleanup(null);
+  function onLostCapture(event) {
+    if (event.pointerId === pointerId) cancel('Region selection cancelled because pointer capture was lost.');
+  }
+
+  function onBlur(event) {
+    // Capture-phase blur also sees the card's textarea losing focus to the shade.
+    if (event.target === window) cancel('Region selection cancelled because the window lost focus.');
+  }
+
+  function onKeyDown(event) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      cancel('Region selection cancelled.');
+    } else if ((event.ctrlKey || event.metaKey) && ['+', '-', '=', '0'].includes(event.key)) {
+      event.preventDefault();
+    } else if ([' ', 'PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+      event.preventDefault();
+    }
   }
 
   shade.addEventListener('pointerdown', onDown);
   shade.addEventListener('pointermove', onMove);
   shade.addEventListener('pointerup', onUp);
   shade.addEventListener('pointercancel', onCancel);
+  shade.addEventListener('lostpointercapture', onLostCapture);
+  shade.addEventListener('wheel', preventGesture, { passive: false });
+  shade.addEventListener('touchmove', preventGesture, { passive: false });
+  window.addEventListener('wheel', preventGesture, { capture: true, passive: false });
+  window.addEventListener('touchmove', preventGesture, { capture: true, passive: false });
   window.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('blur', onBlur, true);
+  window.addEventListener('scroll', onViewportChange, true);
+  window.addEventListener('resize', onViewportChange, true);
+  document.addEventListener('visibilitychange', onVisibilityChange, true);
+  window.visualViewport?.addEventListener('resize', onViewportChange);
+  window.visualViewport?.addEventListener('scroll', onViewportChange);
 
-  active = { promise, cancel: () => cleanup(null) };
+  active = { promise, cancel };
   return promise;
 }
 
-function cancel() {
-  active?.cancel();
+function cancel(reason) {
+  active?.cancel(reason || 'Region selection cancelled.');
 }
 
 const VibeRegionCapture = { start, isActive, cancel };

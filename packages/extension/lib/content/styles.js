@@ -167,6 +167,8 @@ export const VIBE_STYLES = `
   inset: 0;
   pointer-events: auto;
   cursor: crosshair;
+  z-index: 200;
+  -webkit-user-select: none;
   user-select: none;
 }
 /* Full-page dim, shown until the drag starts — then the selection rect dims the
@@ -2446,4 +2448,16 @@ export const VIBE_STYLES = `
 .vibe-local-preview img { display: block; max-width: 100%; height: auto; margin-top: 12px; }
 .vibe-local-preview a { display: inline-block; margin-left: 8px; }
 
+.vibe-export-review { position: fixed; inset: 0; z-index: 100; pointer-events: auto; display: grid; place-items: center; padding: 16px; background: #0008; color: var(--v-text-primary); font: 13px/1.4 var(--v-font); }
+.vibe-export-card { width: min(680px, 96vw); max-height: 90vh; overflow: auto; padding: 20px; border: 1px solid var(--v-toolbar-border); border-radius: var(--v-radius-md); background: var(--v-panel-bg); box-shadow: var(--v-panel-shadow); }
+.vibe-export-list { max-height: 55vh; overflow: auto; margin: 12px 0; }
+.vibe-export-item { padding: 8px 0; border-bottom: 1px solid var(--v-outline); }
+.vibe-export-row, .vibe-export-field { display: flex; align-items: flex-start; gap: 8px; margin: 5px 0; }
+.vibe-export-field { padding-left: 22px; color: var(--v-text-secondary, #555); font-size: 11px; overflow-wrap: anywhere; }
+.vibe-export-preview { max-width: 180px; max-height: 100px; object-fit: contain; margin: 4px 0 8px 44px; }
+.vibe-export-error, .vibe-export-preview-status { color: var(--v-warning); margin: 8px 0; }
+.vibe-export-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.vibe-export-list details > details { margin-left: 16px; }
+.vibe-export-list summary { cursor: pointer; }
+.vibe-export-list input { accent-color: var(--v-accent); flex: none; margin-top: 2px; }
 `;

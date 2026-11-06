@@ -481,22 +481,131 @@ class VibeAnnotationsBackground {
     if (!Number.isInteger(tabId) || !Number.isInteger(windowId)) throw new Error('Capture must originate from an active browser tab');
     if (!['element', 'region'].includes(request.captureMode)) throw new Error('Capture mode must be element or region');
     await this._localAttachmentRecovery;
-    const before = await chrome.tabs.query({ active: true, windowId });
-    if (!before.some(tab => tab.id === tabId)) throw new Error('The capture tab is no longer active');
+
+    const watchKey = `__vaCaptureGeometry_${crypto.randomUUID().replaceAll('-', '')}`;
+    const readGeometry = async (watch = false) => {
+      const [entry] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (key, install) => {
+          const visual = window.visualViewport;
+          const geometry = () => ({
+            width: window.innerWidth,
+            height: window.innerHeight,
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            visualWidth: visual?.width ?? window.innerWidth,
+            visualHeight: visual?.height ?? window.innerHeight,
+            visualOffsetLeft: visual?.offsetLeft ?? 0,
+            visualOffsetTop: visual?.offsetTop ?? 0,
+            visualScale: visual?.scale ?? 1,
+            dpr: window.devicePixelRatio || 1,
+          });
+          if (install) {
+            const watch = { changed: false };
+            const changed = event => {
+              if (event.target === window || event.target === document || event.target === document.documentElement ||
+                  event.target === document.body || event.target === visual) watch.changed = true;
+            };
+            window.addEventListener('scroll', changed, true);
+            window.addEventListener('resize', changed, true);
+            visual?.addEventListener('scroll', changed);
+            visual?.addEventListener('resize', changed);
+            window[key] = { watch, changed, visual };
+          }
+          const current = window[key];
+          return { geometry: geometry(), changed: !!current?.watch.changed };
+        },
+        args: [watchKey, watch],
+      });
+      return entry?.result;
+    };
+    const stopGeometryWatch = async () => {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          func: key => {
+            const current = window[key];
+            if (!current) return;
+            window.removeEventListener('scroll', current.changed, true);
+            window.removeEventListener('resize', current.changed, true);
+            current.visual?.removeEventListener('scroll', current.changed);
+            current.visual?.removeEventListener('resize', current.changed);
+            delete window[key];
+          },
+          args: [watchKey],
+        });
+      } catch { /* The tab may have navigated or closed during cancellation. */ }
+    };
+    const sameGeometry = (a, b) => a && b && Object.keys(a).every(key =>
+      Number.isFinite(a[key]) && Number.isFinite(b[key]) && Math.abs(a[key] - b[key]) < 0.01);
+    let contextChanged = false;
+    const onActivated = info => { if (info.windowId === windowId && info.tabId !== tabId) contextChanged = true; };
+    const onFocusChanged = focusedWindowId => { if (focusedWindowId !== windowId) contextChanged = true; };
+    const onTabUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && (changeInfo.status === 'loading' || changeInfo.url)) contextChanged = true;
+    };
+    const onTabRemoved = removedTabId => { if (removedTabId === tabId) contextChanged = true; };
+    const onZoomChanged = info => { if (info.tabId === tabId) contextChanged = true; };
+    const assertCaptureContext = async (expectedGeometry, expectedZoom) => {
+      const [focusedWindow, activeTabs, currentZoom, geometryResult] = await Promise.all([
+        chrome.windows.getLastFocused(),
+        chrome.tabs.query({ active: true, windowId }),
+        chrome.tabs.getZoom(tabId),
+        readGeometry(),
+      ]);
+      if (contextChanged || focusedWindow.id !== windowId || focusedWindow.focused === false ||
+          !activeTabs.some(tab => tab.id === tabId)) {
+        throw new Error('Capture cancelled because the active tab or focused window changed.');
+      }
+      if (geometryResult?.changed) throw new Error('Capture cancelled because the page viewport or scroll position changed.');
+      if (expectedZoom != null && Math.abs(currentZoom - expectedZoom) > 0.001) {
+        throw new Error('Capture cancelled because browser zoom changed.');
+      }
+      if (expectedGeometry && !sameGeometry(expectedGeometry, geometryResult?.geometry)) {
+        throw new Error('Capture cancelled because the page viewport, scroll position, or zoom changed.');
+      }
+      return { zoom: currentZoom, geometry: geometryResult.geometry };
+    };
+
+    const crop = request.crop || {};
+    const viewport = crop.viewport;
+    const visualWidth = viewport?.visualWidth || viewport?.width;
+    const visualHeight = viewport?.visualHeight || viewport?.height;
+    if (!viewport || ![crop.left, crop.top, crop.width, crop.height, viewport.width, viewport.height,
+      visualWidth, visualHeight, viewport.visualOffsetLeft ?? 0, viewport.visualOffsetTop ?? 0]
+      .every(Number.isFinite) || crop.width <= 0 || crop.height <= 0 || viewport.width <= 0 ||
+      viewport.height <= 0 || visualWidth <= 0 || visualHeight <= 0) {
+      throw new Error('Capture crop has invalid viewport geometry');
+    }
+    chrome.tabs.onActivated.addListener(onActivated);
+    chrome.windows.onFocusChanged.addListener(onFocusChanged);
+    chrome.tabs.onUpdated.addListener(onTabUpdated);
+    chrome.tabs.onRemoved.addListener(onTabRemoved);
+    chrome.tabs.onZoomChange.addListener(onZoomChanged);
+    try {
+      await readGeometry(true);
+    const before = await assertCaptureContext(viewport);
     const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
-    const after = await chrome.tabs.query({ active: true, windowId });
-    if (!after.some(tab => tab.id === tabId)) throw new Error('The active tab changed during capture');
+    await assertCaptureContext(before.geometry, before.zoom);
+
     const fullBlob = await (await fetch(dataUrl)).blob();
     const bitmap = await createImageBitmap(fullBlob);
     try {
-      const crop = request.crop || {};
-      const sx = Math.floor(crop.sx);
-      const sy = Math.floor(crop.sy);
-      const sw = Math.ceil(crop.sw);
-      const sh = Math.ceil(crop.sh);
-      if (![sx, sy, sw, sh].every(Number.isFinite) || sx < 0 || sy < 0 || sw <= 0 || sh <= 0 || sx + sw > bitmap.width || sy + sh > bitmap.height) {
-        throw new Error('Capture crop is outside the captured image');
+      // captureVisibleTab includes scrollbar gutters; visualViewport excludes them.
+      // Its scale/offset describe pinch zoom, while innerWidth/Height span the bitmap.
+      const visualWidth = viewport.width / (viewport.visualScale || 1);
+      const visualHeight = viewport.height / (viewport.visualScale || 1);
+      const offsetLeft = viewport.visualOffsetLeft || 0;
+      const offsetTop = viewport.visualOffsetTop || 0;
+      if (Math.abs(bitmap.width * visualHeight / visualWidth - bitmap.height) > 2) {
+        throw new Error(`Capture cancelled because bitmap ${bitmap.width}×${bitmap.height} and viewport ${visualWidth}×${visualHeight} geometry do not match.`);
       }
+      const left = Math.max(0, Math.min(bitmap.width, Math.floor((crop.left - offsetLeft) * bitmap.width / visualWidth)));
+      const top = Math.max(0, Math.min(bitmap.height, Math.floor((crop.top - offsetTop) * bitmap.height / visualHeight)));
+      const right = Math.max(left, Math.min(bitmap.width, Math.ceil((crop.left + crop.width - offsetLeft) * bitmap.width / visualWidth)));
+      const bottom = Math.max(top, Math.min(bitmap.height, Math.ceil((crop.top + crop.height - offsetTop) * bitmap.height / visualHeight)));
+      const sx = left, sy = top, sw = right - left, sh = bottom - top;
+      if (sw <= 0 || sh <= 0) throw new Error('Capture crop is outside the captured image');
       const cropped = await createImageBitmap(bitmap, sx, sy, sw, sh);
       try {
         const canvas = new OffscreenCanvas(cropped.width, cropped.height);
@@ -505,7 +614,8 @@ class VibeAnnotationsBackground {
         context.drawImage(cropped, 0, 0);
         const blob = await canvas.convertToBlob({ type: 'image/webp', quality: 0.85 });
         if (blob.type !== 'image/webp') throw new Error('Unable to encode capture as WebP');
-        return await createLocalAttachment({
+        await assertCaptureContext(before.geometry, before.zoom);
+        const attachment = await createLocalAttachment({
           draft_id: request.draftId,
           capture_mode: request.captureMode,
           mime: blob.type,
@@ -513,11 +623,26 @@ class VibeAnnotationsBackground {
           height: cropped.height,
           blob,
         });
+        try {
+          await assertCaptureContext(before.geometry, before.zoom);
+        } catch (error) {
+          await removeLocalAttachment(attachment.id, request.draftId);
+          throw error;
+        }
+        return attachment;
       } finally {
         cropped.close?.();
       }
     } finally {
       bitmap.close?.();
+    }
+    } finally {
+      chrome.tabs.onActivated.removeListener(onActivated);
+      chrome.windows.onFocusChanged.removeListener(onFocusChanged);
+      chrome.tabs.onUpdated.removeListener(onTabUpdated);
+      chrome.tabs.onRemoved.removeListener(onTabRemoved);
+      chrome.tabs.onZoomChange.removeListener(onZoomChanged);
+      await stopGeometryWatch();
     }
   }
 
@@ -582,13 +707,12 @@ class VibeAnnotationsBackground {
     return attachment;
   }
 
-  // Request the broad host permission captureVisibleTab needs (screenshots). The
-  // user gesture from the toggle click propagates through sendMessage → here.
-  // Already-granted returns true without a prompt.
+  // Request screenshot host permission in response to the explicit capture action.
+  // Already-granted permission returns true without a prompt.
   async requestScreenshotPermission() {
     try {
-      // Must be '<all_urls>' specifically — captureVisibleTab does not accept
-      // '*://*/*'. Already-granted returns true without a prompt.
+      // Content UI clicks do not themselves grant activeTab. Request the existing
+      // optional all-sites permission rather than broadening mandatory permissions.
       return await chrome.permissions.request({ origins: ['<all_urls>'] });
     } catch (err) {
       console.error('Screenshot permission request failed:', err);

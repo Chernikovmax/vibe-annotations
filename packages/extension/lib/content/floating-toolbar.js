@@ -1,13 +1,13 @@
 // Floating pill toolbar — always visible, bottom-right by default
 // Draggable, collapsible, position persisted to storage
-// Settings dropdown with theme toggle, MCP status, clear-on-copy
+// Settings dropdown with theme toggle, MCP status, local image controls
 
 import VibeAPI from './api-bridge.js';
 import VibeElementContext from './element-context.js';
 import VibeEvents, { vibeLocationPath } from './event-bus.js';
 import VibeShadowHost from './shadow-host.js';
 import VibeToolbarDocs from './toolbar-docs.js';
-import { renderAnnotationsMarkdown } from './export-markdown.js';
+import { openExportReview } from './local-export.js';
 import { isRecordableHotkey } from './hotkey.js';
 import { isReviewable, variantContext, currentVariant, variantElement, previewVariant, chooseVariant } from './variants.js';
 
@@ -19,7 +19,6 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
   let serverOutdated = false; // connected but older than the extension needs
   let annotationCount = 0;
   let styleAnnotationCount = 0;
-  let clearOnCopy = false;
   let badgeColor = '#D03D68';
   let watcherActive = false;
   let isOverlayVisible = true;
@@ -84,8 +83,6 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     const root = VibeShadowHost.getRoot();
     if (!root) return;
 
-    clearOnCopy = await VibeAPI.getClearOnCopy();
-    
     badgeColor = await VibeAPI.getBadgeColor();
     applyBadgeColor(badgeColor);
     customShortcut = await VibeAPI.getCustomShortcut();
@@ -174,7 +171,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     toolbarEl.className = 'vibe-toolbar';
 
     toolbarEl.innerHTML = `
-      <img class="vibe-toolbar-logo" src="${logoUrl}" />
+      <img class="vibe-toolbar-logo" src="${logoUrl}" alt="vibe-remarker" title="vibe-remarker" />
       <div class="vibe-toolbar-separator"></div>
       <div class="vibe-toolbar-middle">
         <div class="vibe-toolbar-default">
@@ -212,7 +209,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
       </div>
       ${isEmbeddedHost ? '' : `
       <div class="vibe-toolbar-separator"></div>
-      <button class="vibe-toolbar-close vibe-tb-close" title="Close Vibe Annotations">
+      <button class="vibe-toolbar-close vibe-tb-close" title="Close vibe-remarker">
         ${ICONS.close}
       </button>`}
     `;
@@ -479,66 +476,43 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
 
     // --- Wire View All actions ---
 
-    // Copy all (project-wide)
     const copyBtn = viewAllPanel.querySelector('.vibe-viewall-copy');
     copyBtn.addEventListener('click', async () => {
       const all = (await VibeAPI.loadProjectAnnotations()).filter(a => a.status !== 'resolved');
       if (!all.length) return;
-      const text = renderAnnotationsMarkdown(all, window.location.host);
-      try { await navigator.clipboard.writeText(text); } catch {
-        const ta = document.createElement('textarea'); ta.value = text;
-        document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
-      }
-      // Flash checkmark feedback
-      const origHTML = copyBtn.innerHTML;
-      copyBtn.innerHTML = ICONS.check;
-      copyBtn.style.color = 'var(--v-status-online)';
-      setTimeout(() => { copyBtn.innerHTML = origHTML; copyBtn.style.color = ''; }, 1500);
-
-      if (clearOnCopy) {
-        for (const a of all) await VibeAPI.deleteAnnotation(a.id);
-        annotationCount = 0;
-        VibeEvents.emit('annotations:cleared', { count: all.length });
-        openViewAll(); // refresh
-      }
+      await openExportReview(all, 'copy');
     });
 
-    // Share / Export — dropdown with .md (agent), .html (human share), and .json
-    // (re-importable) options.
-    // The menu is rendered at the shadow root (not inside the panel) to avoid the
-    // panel's overflow clipping and the toolbar's transform breaking fixed-position.
+    // Every export uses the same local review, including copy.
     const shareBtn = viewAllPanel.querySelector('.vibe-viewall-export');
     let shareMenu = null;
     const closeShareMenu = () => { if (shareMenu) { shareMenu.remove(); shareMenu = null; } };
-    shareBtn.addEventListener('click', (e) => {
+    shareBtn.addEventListener('click', e => {
       e.stopPropagation();
       if (shareMenu) { closeShareMenu(); return; }
       const root = VibeShadowHost.getRoot();
       if (!root) return;
-      const r = shareBtn.getBoundingClientRect();
       shareMenu = document.createElement('div');
       shareMenu.className = 'vibe-viewall-share-menu';
-      shareMenu.style.top = `${Math.round(r.bottom + 6)}px`;
-      shareMenu.style.left = `${Math.round(Math.max(8, r.right - 200))}px`;
-      shareMenu.innerHTML = `
-        <button class="vibe-share-opt" data-format="md" type="button"><strong>.md</strong><span>for personal use</span></button>
-        <button class="vibe-share-opt" data-format="html" type="button"><strong>.html</strong><span>to share externally</span></button>
-        <button class="vibe-share-opt" data-format="json" type="button"><strong>.json</strong><span>to re-import later</span></button>
-      `;
+      shareMenu.innerHTML = '<button class="vibe-share-opt" type="button"><strong>.zip</strong><span>offline reviewed export</span></button>';
       root.appendChild(shareMenu);
-      shareMenu.querySelectorAll('.vibe-share-opt').forEach(opt => {
-        opt.addEventListener('click', async (ev) => {
-          ev.stopPropagation();
-          const fmt = opt.dataset.format;
-          closeShareMenu();
-          await downloadShare(fmt);
-        });
+      shareMenu.querySelector('.vibe-share-opt').addEventListener('click', async () => {
+        closeShareMenu();
+        const all = (await VibeAPI.loadProjectAnnotations()).filter(a => a.status !== 'resolved');
+        if (!all.length) return;
+        const review = await openExportReview(all);
+        if (!review) return;
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(review.blob);
+        link.download = `vibe-annotations-${window.location.hostname.replace(/[^a-z0-9.-]/gi, '_') || 'annotations'}.zip`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
       });
     });
-    // Close on any click elsewhere (in the overlay or on the page).
-    const onOutsideClick = (ev) => { if (shareMenu && !shareMenu.contains(ev.target) && ev.target !== shareBtn) closeShareMenu(); };
+    const onOutsideClick = ev => { if (shareMenu && !shareMenu.contains(ev.target) && ev.target !== shareBtn) closeShareMenu(); };
     VibeShadowHost.getRoot()?.addEventListener('click', onOutsideClick);
     document.addEventListener('click', closeShareMenu);
+
 
     // Delete all (animate all cards out with stagger, then delete)
     viewAllPanel.querySelector('.vibe-viewall-deleteall').addEventListener('click', async () => {
@@ -712,13 +686,6 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
         </div>
         <div class="vibe-settings-item">
           <div class="vibe-settings-item-left">
-            ${ICONS.copy}
-            <span>Clear after copy</span>
-          </div>
-          <button class="vibe-toggle vibe-clear-on-copy-toggle ${clearOnCopy ? 'on' : ''}" type="button"></button>
-        </div>
-        <div class="vibe-settings-item">
-          <div class="vibe-settings-item-left">
             ${ICONS.camera}
             <div>
               <span>Local screenshots</span>
@@ -744,12 +711,6 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
 
     toolbarEl.appendChild(settingsDropdown);
 
-    // Clear on copy toggle
-    settingsDropdown.querySelector('.vibe-clear-on-copy-toggle').addEventListener('click', async (e) => {
-      clearOnCopy = !clearOnCopy;
-      e.currentTarget.classList.toggle('on', clearOnCopy);
-      await VibeAPI.saveClearOnCopy(clearOnCopy);
-    });
 
     settingsDropdown.querySelector('.vibe-clear-local-images-btn').addEventListener('click', async (e) => {
       if (!window.confirm('Clear all locally stored screenshots? This cannot be undone.')) return;
@@ -1344,74 +1305,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     });
   }
 
-  // --- Import / Export ---
 
-  // Fetch a shareable export from the server and trigger a file download.
-  // format: 'md' (agent, local image paths) or 'html' (self-contained, base64 images).
-  async function downloadShare(format) {
-    // Exclude resolved so exports match the "View all" list (no finalized variant artifacts).
-    const all = (await VibeAPI.loadProjectAnnotations()).filter(a => a.status !== 'resolved');
-    if (!all.length) { showInfoModal('Nothing to export', 'No annotations for this site yet.'); return; }
-    const host = window.location.host.replace(/[^a-z0-9.-]/gi, '_') || 'annotations';
-    try {
-      let content, mime;
-      if (format === 'md') {
-        // Same renderer as the clipboard — client-side, works with no server.
-        content = renderAnnotationsMarkdown(all, window.location.host);
-        mime = 'text/markdown';
-      } else if (format === 'json') {
-        // The stored annotation objects in a re-importable envelope (see
-        // processImport). Client-side, works with no server. Round-trips onto
-        // another localhost via the settings-menu Import.
-        content = buildExportEnvelope(all);
-        mime = 'application/json';
-      } else {
-        // HTML embeds the images as base64, which needs the server to read them.
-        ({ content, mime } = await VibeAPI.getShareExport(`${window.location.origin}/*`, 'html'));
-      }
-      const blob = new Blob([content], { type: mime || 'text/plain' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `vibe-annotations-${host}.${format}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    } catch (err) {
-      console.warn('[Vibe] export failed:', err);
-      // .html needs the server to read + embed the image files. Probe live —
-      // a cached "offline" would misdiagnose a server that just came back.
-      const status = await VibeAPI.checkServerStatus({ fresh: true }).catch(() => null);
-      if (status?.outdated) {
-        showInfoModal('Update your server', 'The .html export needs a newer annotations server. Run "npm update -g vibe-annotations-server" and restart it — or use the .md export, which works offline.');
-      } else if (!status?.connected) {
-        showInfoModal('Export failed', 'The .html export needs the local annotations server running. Start it, or use the .md export instead.');
-      } else {
-        // Server is up, so this isn't a "start the server" problem — most likely
-        // the export request itself failed (bad response, timeout on a large set).
-        showInfoModal('Export failed', 'The server is running but the export request failed. Check the server logs, then try again — or use the .md export, which works offline.');
-      }
-    }
-  }
-
-  // Wrap the stored annotation objects in the re-importable envelope processImport
-  // expects. The `source.origin` lets Import offer a cross-origin remap; `screenshot`
-  // is stripped (attachments travel by reference, not inline). Returns a JSON string.
-  function buildExportEnvelope(annotations) {
-    const loc = window.location;
-    return JSON.stringify({
-      vibe_annotations_export: true,
-      version: '1.0',
-      exported_at: new Date().toISOString(),
-      source: { origin: loc.origin, hostname: loc.hostname, port: loc.port || '' },
-      scope: 'project',
-      annotations: annotations.map(a => {
-        const cleaned = { ...a };
-        delete cleaned.screenshot;
-        return cleaned;
-      })
-    }, null, 2);
-  }
 
   function triggerImport() {
     const input = document.createElement('input');
@@ -1443,7 +1337,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
 
     // Validate envelope
     if (!data || data.vibe_annotations_export !== true || !Array.isArray(data.annotations)) {
-      showInfoModal('Invalid format', 'This file is not a Vibe Annotations export.');
+      showInfoModal('Invalid format', 'This file is not a vibe-remarker / Vibe Annotations export.');
       return;
     }
 
@@ -1671,115 +1565,6 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     return isMac ? parts.join('') : parts.join('+');
   }
 
-  // --- Clipboard format ---
-
-
-
-  function formatAnnotationsForClipboard(annotations) {
-    const host = window.location.host;
-    const count = annotations.length;
-
-    let header = `# Vibe Annotations \u2014 ${host}`;
-    header += ` \u00B7 ${count} annotation${count !== 1 ? 's' : ''}`;
-
-    // Group by route
-    const routeGroups = {};
-    for (const a of annotations) {
-      const route = a.url_path || (() => { try { return new URL(a.url).pathname; } catch { return '/'; } })();
-      if (!routeGroups[route]) routeGroups[route] = [];
-      routeGroups[route].push(a);
-    }
-
-    const sections = [];
-    let globalIdx = 0;
-    for (const route of Object.keys(routeGroups).sort()) {
-      const items = routeGroups[route];
-      const routeHeader = `## ${route} (${items.length})`;
-
-      const blocks = items.map(a => {
-        globalIdx++;
-        const isStylesheet = a.type === 'stylesheet';
-
-        if (isStylesheet) {
-          const lines = [];
-          lines.push(`${globalIdx}. [Stylesheet change]`);
-          if (a.comment) lines.push(`   Comment: ${a.comment}`);
-          if (a.css) lines.push(`   CSS rules:\n${a.css.split('\n').map(l => '      ' + l).join('\n')}`);
-          return lines.join('\n');
-        }
-
-        const ec = a.element_context || {};
-        const tag = ec.tag ? `<${ec.tag}>` : '';
-        const text = ec.text ? truncate(ec.text, 40) : '';
-        const identity = [tag, text ? `"${text}"` : ''].filter(Boolean).join(' ');
-
-        const lines = [];
-        lines.push(`${globalIdx}. ${identity}`);
-        if (a.comment) lines.push(`   Comment: ${a.comment}`);
-        lines.push(`   Selector: ${formatAnnotationSelector(a)}`);
-        const pathStr = formatAnnotationPath(a);
-        if (pathStr) lines.push(`   Path: ${pathStr}`);
-
-        if (a.source_file_path) {
-          let src = a.source_file_path;
-          if (a.source_line_range) src += ` (lines ${a.source_line_range})`;
-          lines.push(`   Source: ${src}`);
-        }
-
-        const pc = a.pending_changes;
-        if (pc) {
-          const changes = [];
-          if (pc.fontSize) changes.push(`font-size: ${pc.fontSize.original} \u2192 ${pc.fontSize.value}`);
-          if (pc.fontWeight) changes.push(`font-weight: ${pc.fontWeight.original} \u2192 ${pc.fontWeight.value}`);
-          if (pc.lineHeight) changes.push(`line-height: ${pc.lineHeight.original} \u2192 ${pc.lineHeight.value}`);
-          if (pc.textAlign) changes.push(`text-align: ${pc.textAlign.original} \u2192 ${pc.textAlign.value}`);
-          ['paddingTop','paddingRight','paddingBottom','paddingLeft','marginTop','marginRight','marginBottom','marginLeft'].filter(p => pc[p]).forEach(p => {
-            changes.push(`${camelToKebab(p)}: ${pc[p].original} \u2192 ${pc[p].value}`);
-          });
-          if (pc.display) changes.push(`display: ${pc.display.original} \u2192 ${pc.display.value}`);
-          if (pc.flexDirection) changes.push(`flex-direction: ${pc.flexDirection.original} \u2192 ${pc.flexDirection.value}`);
-          if (pc.flexWrap) changes.push(`flex-wrap: ${pc.flexWrap.original} \u2192 ${pc.flexWrap.value}`);
-          if (pc.justifyContent) changes.push(`justify-content: ${pc.justifyContent.original} \u2192 ${pc.justifyContent.value}`);
-          if (pc.alignItems) changes.push(`align-items: ${pc.alignItems.original} \u2192 ${pc.alignItems.value}`);
-          if (pc.gridTemplateColumns) changes.push(`grid-template-columns: ${pc.gridTemplateColumns.original} \u2192 ${pc.gridTemplateColumns.value}`);
-          if (pc.gridTemplateRows) changes.push(`grid-template-rows: ${pc.gridTemplateRows.original} \u2192 ${pc.gridTemplateRows.value}`);
-          if (pc.gap) changes.push(`gap: ${pc.gap.original} \u2192 ${pc.gap.value}`);
-          if (pc.columnGap) changes.push(`column-gap: ${pc.columnGap.original} \u2192 ${pc.columnGap.value}`);
-          if (pc.rowGap) changes.push(`row-gap: ${pc.rowGap.original} \u2192 ${pc.rowGap.value}`);
-          if (pc.borderWidth) changes.push(`border-width: ${pc.borderWidth.original} \u2192 ${pc.borderWidth.value}`);
-          if (pc.borderRadius) changes.push(`border-radius: ${pc.borderRadius.original} \u2192 ${pc.borderRadius.value}`);
-          if (pc.color) changes.push(`color: ${pc.color.original} \u2192 ${pc.color.variable ? `var(${pc.color.variable})` : pc.color.value}`);
-          if (pc.backgroundColor) changes.push(`background-color: ${pc.backgroundColor.original} \u2192 ${pc.backgroundColor.variable ? `var(${pc.backgroundColor.variable})` : pc.backgroundColor.value}`);
-          if (pc.borderColor) changes.push(`border-color: ${pc.borderColor.original} \u2192 ${pc.borderColor.variable ? `var(${pc.borderColor.variable})` : pc.borderColor.value}`);
-          if (pc.width) changes.push(`width: ${pc.width.original} \u2192 ${pc.width.value}`);
-          if (pc.minWidth) changes.push(`min-width: ${pc.minWidth.original} \u2192 ${pc.minWidth.value}`);
-          if (pc.maxWidth) changes.push(`max-width: ${pc.maxWidth.original} \u2192 ${pc.maxWidth.value}`);
-          if (pc.height) changes.push(`height: ${pc.height.original} \u2192 ${pc.height.value}`);
-          if (pc.minHeight) changes.push(`min-height: ${pc.minHeight.original} \u2192 ${pc.minHeight.value}`);
-          if (pc.maxHeight) changes.push(`max-height: ${pc.maxHeight.original} \u2192 ${pc.maxHeight.value}`);
-          const standardProps = new Set(['fontSize','fontWeight','lineHeight','textAlign','paddingTop','paddingRight','paddingBottom','paddingLeft','marginTop','marginRight','marginBottom','marginLeft','display','flexDirection','flexWrap','justifyContent','alignItems','gridTemplateColumns','gridTemplateRows','gap','columnGap','rowGap','borderWidth','borderRadius','borderStyle','color','backgroundColor','borderColor','width','minWidth','maxWidth','height','minHeight','maxHeight']);
-          for (const [prop, change] of Object.entries(pc)) {
-            if (!standardProps.has(prop) && change.original && change.value) {
-              changes.push(`${camelToKebab(prop)}: ${change.original} \u2192 ${change.value}`);
-            }
-          }
-          if (changes.length) {
-            lines.push(`   Design changes: ${changes.join(', ')}`);
-          }
-        }
-
-        if (a.css) {
-          lines.push(`   CSS rules:\n${a.css.split('\n').map(l => '      ' + l).join('\n')}`);
-        }
-
-        return lines.join('\n');
-      });
-
-      sections.push(routeHeader + '\n\n' + blocks.join('\n\n'));
-    }
-
-    return header + '\n\nFollow my instructions on these elements.\nWhen applying design changes, map values to the project design system (Tailwind classes, CSS variables, or design tokens).\n\n---\n\n' + sections.join('\n\n---\n\n');
-  }
 
   function formatAnnotationPath(annotation) {
     const ec = annotation.element_context || {};

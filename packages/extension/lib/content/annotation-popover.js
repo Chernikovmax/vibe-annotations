@@ -302,7 +302,7 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
     attachmentsEl.after(statusEl);
     const notice = document.createElement('p');
     notice.className = 'vibe-attachments-notice';
-    notice.textContent = 'Screenshots stay in this browser, not MCP. Clearing extension data removes them. Save images from preview before clearing data; ZIP export is not available yet.';
+    notice.textContent = 'Screenshots stay in this browser, not MCP. Clearing extension data removes them. Save images from preview or use View all → Share / Export for a reviewed ZIP backup.';
     statusEl.after(notice);
     const showAttachmentError = err => {
       const message = err.message || String(err);
@@ -392,14 +392,31 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
       attachInput.value = '';
     });
 
-    // Capture/crop/Blob persistence all run in the extension worker.
-    async function captureCssRegion(box, captureMode) {
-      const dpr = window.devicePixelRatio || 1; // Prototype geometry; stage 3 replaces this.
-      const crop = {
-        sx: Math.round(box.left * dpr), sy: Math.round(box.top * dpr),
-        sw: Math.round(box.width * dpr), sh: Math.round(box.height * dpr),
+    function captureViewportGeometry() {
+      const visual = window.visualViewport;
+      return {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        visualWidth: visual?.width ?? window.innerWidth,
+        visualHeight: visual?.height ?? window.innerHeight,
+        visualOffsetLeft: visual?.offsetLeft ?? 0,
+        visualOffsetTop: visual?.offsetTop ?? 0,
+        visualScale: visual?.scale ?? 1,
+        dpr: window.devicePixelRatio || 1,
       };
-      if (crop.sw <= 0 || crop.sh <= 0) throw new Error('The selected element is outside the visible page.');
+    }
+
+    async function captureCssRegion(box, captureMode) {
+      const crop = {
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+        viewport: box.viewport || captureViewportGeometry(),
+      };
+      if (crop.width <= 0 || crop.height <= 0) throw new Error('The selected element is outside the visible page.');
       const host = VibeShadowHost.getHost();
       const visibility = host?.style.visibility;
       try {
@@ -407,12 +424,12 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
         await new Promise(resolve => requestAnimationFrame(resolve));
         statusEl.textContent = 'Capturing and saving locally…';
         const { attachment } = await LocalAttachments.capture(draftId, captureMode, crop);
-        // No tile/link is published before the worker confirms IDB commit.
         localAttachments.push(attachment);
         renderAttachments();
         markAttachmentsChanged();
         const preview = await LocalAttachments.read(attachment.id);
-        sessionBlobUrls.set(attachment.id, URL.createObjectURL(await (await fetch(preview.dataUrl)).blob()));
+        const previewBlob = await (await fetch(preview.dataUrl)).blob();
+        sessionBlobUrls.set(attachment.id, URL.createObjectURL(previewBlob));
         renderAttachments();
         markAttachmentsChanged();
         statusEl.textContent = 'Saved locally. Click the image to preview or save it.';
@@ -429,6 +446,8 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
       attachmentTask = (async () => {
         const anchorEl = currentPopover;
         const highlightEl = currentTargetHighlight;
+        const anchorVisibility = anchorEl?.style.visibility;
+        const highlightVisibility = highlightEl?.style.visibility;
         try {
           statusEl.textContent = 'Waiting for screenshot permission…';
           if (!await VibeAPI.requestScreenshotPermission()) throw new Error('Screenshot permission was not granted. Your text is unchanged.');
@@ -437,27 +456,30 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
             statusEl.textContent = 'Select a region…';
             if (anchorEl) anchorEl.style.visibility = 'hidden';
             if (highlightEl) highlightEl.style.visibility = 'hidden';
-            const box = await VibeRegionCapture.start();
+            const box = await VibeRegionCapture.start({
+              onCancel: message => { if (!closing) statusEl.textContent = message; },
+            });
             if (box && !closing) await captureCssRegion(box, captureMode);
-            else statusEl.textContent = 'Region capture cancelled.';
+            else if (!closing && statusEl.textContent === 'Select a region…') statusEl.textContent = 'Region selection cancelled.';
           } else {
             const r = targetElement.getBoundingClientRect();
             const left = Math.max(0, r.left - 16), top = Math.max(0, r.top - 16);
             const right = Math.min(innerWidth, r.right + 16), bottom = Math.min(innerHeight, r.bottom + 16);
-            await captureCssRegion({ left, top, width: right - left, height: bottom - top }, captureMode);
+            await captureCssRegion({ left, top, width: right - left, height: bottom - top, viewport: captureViewportGeometry() }, captureMode);
           }
         } catch (err) {
           showAttachmentError(err);
         } finally {
-          if (anchorEl) anchorEl.style.visibility = '';
-          if (highlightEl) highlightEl.style.visibility = '';
+          if (anchorEl) anchorEl.style.visibility = anchorVisibility;
+          if (highlightEl) highlightEl.style.visibility = highlightVisibility;
           capturing = false;
           addBtn.disabled = false;
           popover._updateSave?.();
-          if (!closing && textarea.isConnected) textarea.focus();
+          if (!closing) textarea.focus();
         }
       })();
     }
+
     const takeScreenshot = () => runCapture('element');
     const takeRegionScreenshot = () => runCapture('region');
     textarea.addEventListener('paste', (e) => {
