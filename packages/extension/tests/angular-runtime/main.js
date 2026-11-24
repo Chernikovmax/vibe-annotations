@@ -67,6 +67,8 @@ ViewChild('portalAnchor', { static: true, read: ViewContainerRef })(AppComponent
 Component({ selector: 'fixture-root', standalone: true,
   imports: [CardComponent, RecursiveComponent, SameA, SameB, RouterOutlet, MatDialogModule, ShadowComponent, CellActionsComponent, TableOutletComponent],
   template: `<ng-template #actions><fixture-cell-actions data-testid="projected-actions" awpTableCell="actions"></fixture-cell-actions></ng-template><fixture-table [cellTemplate]="actions"></fixture-table><fixture-card class="user-card"><button data-testid="projected">Projected</button></fixture-card>
+    <div data-testid="golden-tabs"><div role="tab" id="golden-tab"><span class="fixture-tab-label" data-testid="golden-tab-caption" translate="FIXTURE.TAB.UNIONS">Объединение категорий</span></div></div>
+    <button type="button" matMenuTriggerFor="fixtureMenu"><span class="fixture-work-duration">00:38:56</span></button>
     <fixture-recursive></fixture-recursive><fixture-same-a></fixture-same-a><fixture-same-b></fixture-same-b><fixture-shadow></fixture-shadow>
     <ng-template #dialogTemplate><button data-testid="template-dialog">Template dialog</button></ng-template>
     <ng-template #portalTemplate><button data-testid="template-portal">Template portal</button></ng-template><ng-template #portalAnchor></ng-template><router-outlet></router-outlet>` })(AppComponent);

@@ -328,6 +328,25 @@ async function copyOMP(page, context, origin, selectedComments = null) {
   return page.evaluate(() => navigator.clipboard.readText());
 }
 
+function assertCleanOMPBuild(text, version) {
+  const builds = text.match(/^Build: .+$/gm) || [];
+  assert.equal(builds.length, 1, 'Expected exactly one build stamp in the raw clipboard');
+  const stamp = builds[0].match(/^Build: ([^ ]+) · ([0-9a-f]{12})(\+dirty\.[0-9a-f]{10})? · (.+)$/);
+  assert.ok(stamp, 'Unrecognized build stamp: ' + builds[0]);
+  const buildState = stamp[3] ? 'dirty' : 'clean';
+  assert.equal(buildState, 'clean', 'Golden tests require an extension built from a clean tree');
+  const sha = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: extension, encoding: 'utf8' }).trim();
+  assert.equal(stamp[1], version);
+  assert.equal(stamp[2], sha, 'Rebuild the unpacked extension from the current commit');
+}
+
+function normalizeOMPForGolden(text) {
+  return text
+    .replace(/^## A-(?:remark|vibe)_\d+_[a-z0-9]+(?= · Page:|$)/gm, '## A-REMARKER')
+    .replace(/^Build: \d+\.\d+\.\d+ · [0-9a-f]{12}(?:\+dirty\.[0-9a-f]{10})?(?: · dirty\(\d+\))?(?= · |$)/m,
+      'Build: <ver> · <sha> · <state>');
+}
+
 async function verifyOMPCopy(page, context, origin) {
   const worker = context.serviceWorkers()[0];
   assert.equal(await worker.evaluate(() => chrome.runtime.getManifest().name), 'Remarker');
@@ -357,12 +376,14 @@ async function verifyOMPCopy(page, context, origin) {
   await page.evaluate(() => window.portalRef.dispose());
   await create('[data-testid="projected-actions"]', 'OMP projected actions');
   await create('[data-testid="template-cell"]', 'OMP projection outlet');
+  await create('#golden-tab', 'OMP translated tab');
+  await create('.fixture-work-duration', 'OMP header timer');
   const single = await copyOMP(page, context, origin, ['Angular UI context check']);
   assert.match(single, /CardComponent/);
   assert.match(single, /^## A-remark_\d+_[a-z0-9]+ · Page:/m);
   assert.match(single, /conditional/);
-  assert.match(single, /^Build: 2\.2\.0 · [0-9a-f]{12}(?:\+dirty\.[0-9a-f]{10})? · label, anchor-chain, hop-count=v2, overlay-cause, projection-edge$/m);
-  assert.equal(single.match(/^Build:/gm).length, 1);
+  const version = await worker.evaluate(() => chrome.runtime.getManifest().version);
+  assertCleanOMPBuild(single, version);
   assert.match(single, /^Anchor chain: data-testid="conditional" \(0 up\)/m);
   assert.doesNotMatch(single, /match_scope|match_count/);
   assert.doesNotMatch(single, /OMP same|private=query|#private|DO_NOT_COLLECT|@file/);
@@ -381,9 +402,13 @@ async function verifyOMPCopy(page, context, origin) {
   assert.match(component, /^Target: fixture-cell-actions$/m);
   assert.match(component, /^Interactive ancestor: div\[role="cell"\] \(1 up\)$/m);
   assert.doesNotMatch(component, /^Projected:/m);
-  const outlet = block('OMP projection outlet');
-  assert.match(outlet, /^Owner: AppComponent \(fixture-root\) → TableOutletComponent \(fixture-table; renders the awpTableCell outlet\) ⇢ CellActionsComponent \(fixture-cell-actions; projected cell template\)$/m);
-  assert.match(outlet, /^Projected: fixture-cell-actions \(awpTableCell="actions"\)$/m);
+  for (const [file, comment] of [['tab', 'OMP translated tab'], ['projection', 'OMP projection outlet'], ['timer', 'OMP header timer']]) {
+    const raw = await copyOMP(page, context, origin, [comment]);
+    assertCleanOMPBuild(raw, version);
+    const golden = await readFile(join(here, 'omp-' + file + '.golden.txt'), 'utf8');
+    // Insert the ephemeral server address into the expectation; leave the actual URL untouched.
+    assert.equal(normalizeOMPForGolden(raw), golden.replace('<origin>', origin), file);
+  }
   assert.doesNotMatch(block('OMP limited template dialog'), /MatDialogContainer|limitations/);
   assert.doesNotMatch(block('OMP limited portal'), /AppComponent/);
   assert.match(block('OMP limited portal'), /template-portal/);

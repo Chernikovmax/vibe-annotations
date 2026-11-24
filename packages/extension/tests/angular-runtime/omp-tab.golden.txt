@@ -1,0 +1,14 @@
+# Remarker — manual OMP handoff
+
+Build: <ver> · <sha> · <state> · label, anchor-chain, hop-count=v2, overlay-cause, projection-edge
+
+## A-REMARKER · Page: <origin>/lazy
+Change: OMP translated tab
+Anchor chain: data-testid="golden-tabs" (1 up)
+Target: div
+Label: Объединение категорий
+Label key: FIXTURE.TAB.UNIONS
+Label source: span.fixture-tab-label · data-testid="golden-tab-caption" (descendant)
+Attrs: id="golden-tab"; role="tab"
+Owner: AppComponent (fixture-root)
+State: default

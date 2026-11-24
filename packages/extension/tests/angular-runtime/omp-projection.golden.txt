@@ -1,0 +1,13 @@
+# Remarker — manual OMP handoff
+
+Build: <ver> · <sha> · <state> · label, anchor-chain, hop-count=v2, overlay-cause, projection-edge
+
+## A-REMARKER · Page: <origin>/lazy
+Change: OMP projection outlet
+Anchor chain: data-testid="template-cell" (0 up)
+Target: div
+Attrs: role="cell"
+Cell column: actions (via awpTableCell)
+Projected: fixture-cell-actions (awpTableCell="actions")
+Owner: AppComponent (fixture-root) → TableOutletComponent (fixture-table; renders the awpTableCell outlet) ⇢ CellActionsComponent (fixture-cell-actions; projected cell template)
+State: default

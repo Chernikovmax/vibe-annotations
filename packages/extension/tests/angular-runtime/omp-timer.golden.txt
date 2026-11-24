@@ -1,0 +1,12 @@
+# Remarker — manual OMP handoff
+
+Build: <ver> · <sha> · <state> · label, anchor-chain, hop-count=v2, overlay-cause, projection-edge
+
+## A-REMARKER · Page: <origin>/lazy
+Change: OMP header timer
+Anchor chain: none
+Target: span.fixture-work-duration
+Interactive ancestor: button (1 up) · matMenuTriggerFor="fixtureMenu"
+Owner: AppComponent (fixture-root)
+State: default
+Text: <dynamic: timer>

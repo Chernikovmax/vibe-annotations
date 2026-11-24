@@ -104,6 +104,9 @@ Run `node packages/extension/tests/context-text-runtime.mjs` for the browser reg
 
 Every OMP handoff begins with one build line: extension version, Git revision
 (with a working-tree fingerprint on local builds), and format capabilities.
+The Angular clipboard golden checks require a clean build of the current Git
+revision. They compare the tab, projection outlet, and timer handoffs exactly
+after masking the annotation ID and the already verified build identity.
 Each OMP note fits in 12 lines. It has a stable annotation ID and a page URL
 without query or fragment. `Anchor chain` lists up to four `data-testid` values
 nearest first, stopping at the nearest detected widget host. Hops count actual
