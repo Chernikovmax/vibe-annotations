@@ -1,5 +1,6 @@
 // Documentation panels and workflow guides for the toolbar settings dropdown.
 // Extracted from floating-toolbar.js to keep each module focused.
+import VibeAPI from './api-bridge.js';
 
 
   function escapeHTML(str) {
@@ -12,7 +13,12 @@
     container.querySelectorAll('.vibe-guide-copy').forEach(btn => {
       btn.addEventListener('click', async () => {
         const cmd = btn.closest('.vibe-guide-cmd').dataset.cmd;
-        await navigator.clipboard.writeText(cmd);
+        try {
+          await VibeAPI.copyText(cmd);
+        } catch (error) {
+          btn.title = error.message;
+          return;
+        }
         btn.innerHTML = ICONS.check;
         setTimeout(() => { btn.innerHTML = ICONS.clipboard; }, 1500);
       });

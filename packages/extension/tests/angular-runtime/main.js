@@ -31,6 +31,14 @@ Component({ selector: 'fixture-recursive', standalone: true, imports: [CommonMod
   template: `<span [attr.data-testid]="'recursive-' + depth">Recursive</span><fixture-recursive *ngIf="depth < 2" [depth]="depth + 1"></fixture-recursive>` })(RecursiveComponent);
 class PortalComponent {}
 Component({ selector: 'fixture-portal', standalone: true, template: '<button data-testid="component-portal">Portal</button>' })(PortalComponent);
+class HidingPanelComponent {}
+Component({ selector: 'awp-hiding-panel', standalone: true, template: '<ng-content select="[widgetContent]"></ng-content>' })(HidingPanelComponent);
+class TableOutletComponent {}
+Input()(TableOutletComponent.prototype, 'cellTemplate');
+Component({ selector: 'fixture-table', standalone: true, imports: [CommonModule, HidingPanelComponent],
+  template: '<awp-hiding-panel><div widgetContent role="cell" data-testid="template-cell"><ng-container *ngTemplateOutlet="cellTemplate"></ng-container></div></awp-hiding-panel>' })(TableOutletComponent);
+class CellActionsComponent {}
+Component({ selector: 'fixture-cell-actions', standalone: true, template: '<button>Run action</button>' })(CellActionsComponent);
 class NestedDialogComponent {}
 Component({ selector: 'fixture-nested-dialog', standalone: true, template: '<button data-testid="nested-dialog">Nested</button>' })(NestedDialogComponent);
 class DialogComponent {
@@ -57,8 +65,8 @@ ViewChild('dialogTemplate', { static: true })(AppComponent.prototype, 'dialogTem
 ViewChild('portalTemplate', { static: true })(AppComponent.prototype, 'portalTemplate');
 ViewChild('portalAnchor', { static: true, read: ViewContainerRef })(AppComponent.prototype, 'portalAnchor');
 Component({ selector: 'fixture-root', standalone: true,
-  imports: [CardComponent, RecursiveComponent, SameA, SameB, RouterOutlet, MatDialogModule, ShadowComponent],
-  template: `<fixture-card class="user-card"><button data-testid="projected">Projected</button></fixture-card>
+  imports: [CardComponent, RecursiveComponent, SameA, SameB, RouterOutlet, MatDialogModule, ShadowComponent, CellActionsComponent, TableOutletComponent],
+  template: `<ng-template #actions><fixture-cell-actions data-testid="projected-actions" awpTableCell="actions"></fixture-cell-actions></ng-template><fixture-table [cellTemplate]="actions"></fixture-table><fixture-card class="user-card"><button data-testid="projected">Projected</button></fixture-card>
     <fixture-recursive></fixture-recursive><fixture-same-a></fixture-same-a><fixture-same-b></fixture-same-b><fixture-shadow></fixture-shadow>
     <ng-template #dialogTemplate><button data-testid="template-dialog">Template dialog</button></ng-template>
     <ng-template #portalTemplate><button data-testid="template-portal">Template portal</button></ng-template><ng-template #portalAnchor></ng-template><router-outlet></router-outlet>` })(AppComponent);

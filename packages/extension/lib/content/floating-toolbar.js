@@ -7,7 +7,7 @@ import VibeElementContext from './element-context.js';
 import VibeEvents, { vibeLocationPath } from './event-bus.js';
 import VibeShadowHost from './shadow-host.js';
 import VibeToolbarDocs from './toolbar-docs.js';
-import { openExportReview } from './local-export.js';
+import { copyAnnotations, openExportReview } from './local-export.js';
 import { isRecordableHotkey } from './hotkey.js';
 import { isReviewable, variantContext, currentVariant, variantElement, previewVariant, chooseVariant } from './variants.js';
 
@@ -29,6 +29,11 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
   // (the mod picks a send up on its next poll) or the window runs out.
   let justSent = { ids: new Set(), until: 0 };
   const JUST_SENT_MS = 20000;
+
+  async function getCopyMode() {
+    const { vibeCopyMode } = await chrome.storage.local.get('vibeCopyMode');
+    return vibeCopyMode === 'markdown' || vibeCopyMode === 'review' ? vibeCopyMode : 'omp';
+  }
   let unsentCount = 0; // this site's annotations Send would hand over
 
   const BADGE_COLORS = ['#D03D68', '#4b5563', '#3b82f6', '#22c55e', '#a855f7'];
@@ -45,7 +50,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
   const ICONS = {
     annotate: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>',
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>',
-    copy: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
+    copy: '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
     trash: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>',
     settings: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>',
     list: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18"/><path d="M3 6h18"/><path d="M3 18h18"/></svg>',
@@ -163,6 +168,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
   }
 
   let viewAllPanel = null;
+  let copying = false;
 
   function buildToolbar(root) {
     const logoUrl = chrome.runtime.getURL('assets/icons/icon-hq.png');
@@ -171,7 +177,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     toolbarEl.className = 'vibe-toolbar';
 
     toolbarEl.innerHTML = `
-      <img class="vibe-toolbar-logo" src="${logoUrl}" alt="ng-vibe-remarker" title="ng-vibe-remarker" />
+      <img class="vibe-toolbar-logo" src="${logoUrl}" alt="Remarker" title="Remarker" />
       <div class="vibe-toolbar-separator"></div>
       <div class="vibe-toolbar-middle">
         <div class="vibe-toolbar-default">
@@ -183,6 +189,10 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
             ${ICONS.list}
             <span>View all</span>
             <span class="vibe-toolbar-pill" style="display:none">0</span>
+          </button>
+          <button class="vibe-toolbar-btn vibe-tb-copy" type="button" title="Copy all annotations" hidden>
+            ${ICONS.copy}
+            <span>Copy</span>
           </button>
           <button class="vibe-toolbar-btn vibe-tb-settings" title="Settings">
             ${ICONS.settings}
@@ -209,9 +219,10 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
       </div>
       ${isEmbeddedHost ? '' : `
       <div class="vibe-toolbar-separator"></div>
-      <button class="vibe-toolbar-close vibe-tb-close" title="Close ng-vibe-remarker">
+      <button class="vibe-toolbar-close vibe-tb-close" title="Close Remarker">
         ${ICONS.close}
       </button>`}
+      <div class="vibe-send-chip vibe-toolbar-copy-status" role="status"></div>
     `;
 
     root.appendChild(toolbarEl);
@@ -255,7 +266,12 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
       const copyBtn = banner.querySelector('.vibe-update-cmd .vibe-guide-copy');
       copyBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        try { await navigator.clipboard.writeText(installCmd); } catch { /* clipboard blocked */ }
+        try {
+          await VibeAPI.copyText(installCmd);
+        } catch (error) {
+          copyBtn.title = error.message;
+          return;
+        }
         copyBtn.innerHTML = ICONS.check;
         setTimeout(() => { copyBtn.innerHTML = ICONS.clipboard; }, 1500);
       });
@@ -293,6 +309,21 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     toolbarEl.querySelector('.vibe-tb-viewall').addEventListener('click', (e) => {
       e.stopPropagation();
       toggleViewAll();
+    });
+
+    const copyStatus = toolbarEl.querySelector('.vibe-toolbar-copy-status');
+    let copyStatusTimer;
+    toolbarEl.querySelector('.vibe-tb-copy').addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (copying) return;
+      closeViewAll();
+      closeSettings();
+      copyStatus.classList.toggle('above', toolbarEl.getBoundingClientRect().top > window.innerHeight / 2);
+      copyProjectAnnotations(text => {
+        clearTimeout(copyStatusTimer);
+        copyStatus.textContent = text;
+        if (text && text !== 'Copying…') copyStatusTimer = setTimeout(() => { copyStatus.textContent = ''; }, 3000);
+      });
     });
 
     // Send to Claude — the Claude Code mod picks it up on its next poll
@@ -337,7 +368,29 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     });
   }
 
-  // --- View All panel (stub — full impl in Phase 6) ---
+  async function copyProjectAnnotations(report) {
+    if (copying) return;
+    copying = true;
+    report('');
+    try {
+      const all = (await VibeAPI.loadProjectAnnotations()).filter(a => a.status !== 'resolved');
+      if (!all.length) { report('No annotations to copy'); return; }
+      const mode = await getCopyMode();
+      if (mode === 'review') {
+        if (!await openExportReview(all, 'copy')) return;
+      } else {
+        report('Copying…');
+        await copyAnnotations(all, mode);
+      }
+      report('Copied');
+    } catch (error) {
+      report('Copy failed: ' + error.message);
+    } finally {
+      copying = false;
+    }
+  }
+
+  // --- View All panel ---
 
   function toggleViewAll() {
     if (viewAllPanel) {
@@ -379,7 +432,6 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     viewAllPanel.className = 'vibe-viewall-panel' + (inLowerHalf ? ' above' : '');
 
     const trashIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
-    const copyIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
     const shareIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>';
     const smallTrash = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
     const sparkleIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>';
@@ -464,11 +516,12 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
       <div class="vibe-viewall-header">
         <span class="vibe-viewall-url">${escapeHTML(hostname)}</span>
         <div class="vibe-viewall-actions">
-          <button class="vibe-viewall-copy" title="Copy all">${copyIcon}</button>
+          <button class="vibe-viewall-copy" type="button" title="Copy all annotations" aria-label="Copy all annotations">${ICONS.copy}</button>
           <button class="vibe-viewall-export" title="Share / Export">${shareIcon}</button>
           <button class="vibe-viewall-deleteall" title="Delete all">${trashIcon}</button>
         </div>
       </div>
+      <div class="vibe-viewall-copy-status" role="status"></div>
       <div class="vibe-viewall-routes">${routesHTML}</div>
     `;
 
@@ -477,13 +530,10 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     // --- Wire View All actions ---
 
     const copyBtn = viewAllPanel.querySelector('.vibe-viewall-copy');
-    copyBtn.addEventListener('click', async () => {
-      const all = (await VibeAPI.loadProjectAnnotations()).filter(a => a.status !== 'resolved');
-      if (!all.length) return;
-      await openExportReview(all, 'copy');
-    });
+    const copyStatus = viewAllPanel.querySelector('.vibe-viewall-copy-status');
+    copyBtn.addEventListener('click', () => copyProjectAnnotations(text => { copyStatus.textContent = text; }));
 
-    // Every export uses the same local review, including copy.
+    // ZIP always opens the review.
     const shareBtn = viewAllPanel.querySelector('.vibe-viewall-export');
     let shareMenu = null;
     const closeShareMenu = () => { if (shareMenu) { shareMenu.remove(); shareMenu = null; } };
@@ -701,6 +751,15 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
           </div>
           <button class="vibe-shortcut-btn" type="button">${escapeHTML(shortcutHint)}</button>
         </div>
+        <label class="vibe-settings-item">
+          <span>Copy mode</span>
+          <select class="vibe-copy-mode" aria-describedby="vibe-copy-mode-note" disabled>
+            <option value="omp">OMP · direct</option>
+            <option value="markdown">Markdown · direct</option>
+            <option value="review">Review before copying</option>
+          </select>
+        </label>
+        <p id="vibe-copy-mode-note" class="vibe-copy-mode-note">OMP saves attached local images to Downloads. Use review to exclude fields or images.</p>
         <div class="vibe-settings-separator"></div>
         <button class="vibe-settings-link vibe-import-btn" type="button">
           ${ICONS.download}
@@ -710,6 +769,23 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     `;
 
     toolbarEl.appendChild(settingsDropdown);
+
+    const copyMode = settingsDropdown.querySelector('.vibe-copy-mode');
+    getCopyMode().then(mode => {
+      copyMode.value = mode;
+      copyMode.disabled = false;
+    }).catch(error => showInfoModal('Could not load copy mode', error.message));
+    copyMode.addEventListener('change', async () => {
+      copyMode.disabled = true;
+      try {
+        await chrome.storage.local.set({ vibeCopyMode: copyMode.value });
+      } catch (error) {
+        copyMode.value = await getCopyMode().catch(() => 'omp');
+        showInfoModal('Could not save copy mode', error.message);
+      } finally {
+        copyMode.disabled = false;
+      }
+    });
 
 
     settingsDropdown.querySelector('.vibe-clear-local-images-btn').addEventListener('click', async (e) => {
@@ -860,6 +936,13 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
       } else {
         pill.style.display = 'none';
       }
+    }
+
+    const copyBtn = toolbarEl.querySelector('.vibe-tb-copy');
+    const copyHidden = totalCount === 0;
+    if (copyBtn.hidden !== copyHidden) {
+      copyBtn.hidden = copyHidden;
+      if (isToolbarVisible()) clampCurrentPosition();
     }
 
     // --- Send to Claude: only while the server and the Claude Code mod are up ---
@@ -1079,10 +1162,12 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
     const DRAG_THRESHOLD = 4;
 
     toolbarEl.addEventListener('mousedown', (e) => {
-      if (e.target.closest('.vibe-toolbar-btn') || e.target.closest('.vibe-toolbar-close') || e.target.closest('.vibe-toolbar-status') || e.target.closest('.vibe-toolbar-kbd')) return;
+      // A new press is independent of the preceding drag's trailing click.
+      didDrag = false;
+      // Flyouts are toolbar descendants, but their controls/text are not drag handles.
+      if (e.button !== 0 || e.target.closest('button, a, input, select, textarea, label, kbd, .vibe-viewall-panel, .vibe-settings-dropdown, .vibe-update-banner, .vibe-send-chip')) return;
 
       isDragging = true;
-      didDrag = false;
       toolbarEl.classList.add('dragging');
       const rect = toolbarEl.getBoundingClientRect();
       startX = e.clientX;
@@ -1259,7 +1344,7 @@ import { isReviewable, variantContext, currentVariant, variantElement, previewVa
 
     // Validate envelope
     if (!data || data.vibe_annotations_export !== true || !Array.isArray(data.annotations)) {
-      showInfoModal('Invalid format', 'This file is not an ng-vibe-remarker / Vibe Annotations export.');
+      showInfoModal('Invalid format', 'This file is not an Remarker / Vibe Annotations export.');
       return;
     }
 

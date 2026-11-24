@@ -1,8 +1,4 @@
-// Background utilities — ID generation, changelog, migrations
-
-export function generateId() {
-  return 'vibe_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-}
+// Background migration utilities
 
 export async function migrateSyncFlags() {
   const result = await chrome.storage.local.get(['annotations', '_syncFlagsMigrated']);

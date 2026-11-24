@@ -359,8 +359,21 @@ function isServerOutdated(version) {
     if (!res.ok) return { success: false };
     return await res.json();
   }
+async function copyText(text) {
+  const response = await chrome.runtime.sendMessage({ action: 'copyText', text });
+  if (!response?.success) throw new Error(response?.error || 'Could not copy to clipboard');
+}
+
+async function exportLocalImages(images) {
+  const response = await chrome.runtime.sendMessage({ action: 'exportLocalImages', images });
+  if (!response?.success) throw new Error(response?.error || 'Could not save images to Downloads');
+  return response.images;
+}
+
 
 const VibeAPI = {
+  copyText,
+  exportLocalImages,
   checkServerStatus,
   clearStatusCache,
   isFileProtocol,

@@ -311,6 +311,7 @@ async function verifyPersistence(page, context) {
 }
 
 async function copyOMP(page, context, origin, selectedComments = null) {
+  await context.serviceWorkers()[0].evaluate(() => chrome.storage.local.set({ vibeCopyMode: 'review' }));
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
   await page.bringToFront();
   // View-all may already be open after export.
@@ -329,13 +330,13 @@ async function copyOMP(page, context, origin, selectedComments = null) {
 
 async function verifyOMPCopy(page, context, origin) {
   const worker = context.serviceWorkers()[0];
-  assert.equal(await worker.evaluate(() => chrome.runtime.getManifest().name), 'ng-vibe-remarker');
-  assert.equal(await worker.evaluate(() => chrome.runtime.getManifest().action.default_title), 'ng-vibe-remarker');
-  assert.equal(await page.locator('.vibe-toolbar-logo').getAttribute('title'), 'ng-vibe-remarker');
+  assert.equal(await worker.evaluate(() => chrome.runtime.getManifest().name), 'Remarker');
+  assert.equal(await worker.evaluate(() => chrome.runtime.getManifest().action.default_title), 'Remarker');
+  assert.equal(await page.locator('.vibe-toolbar-logo').getAttribute('title'), 'Remarker');
   assert.equal(await page.locator('.vibe-toolbar-logo').evaluate(img => img.complete && img.naturalWidth > 0), true);
   const manager = await context.newPage();
   await manager.goto('chrome://extensions');
-  await manager.locator('extensions-item').filter({hasText:'ng-vibe-remarker'}).waitFor();
+  await manager.locator('extensions-item').filter({hasText:'Remarker'}).waitFor();
   await manager.close();
   await page.bringToFront();
   const create = (selector, comment) => page.evaluate(({selector, comment}) => window.__vibeAnnotations.createAnnotation(selector, { comment }), {selector, comment});
@@ -354,28 +355,37 @@ async function verifyOMPCopy(page, context, origin) {
   await page.waitForSelector('[data-testid="template-portal"]');
   await create('[data-testid="template-portal"]', 'OMP limited portal');
   await page.evaluate(() => window.portalRef.dispose());
+  await create('[data-testid="projected-actions"]', 'OMP projected actions');
+  await create('[data-testid="template-cell"]', 'OMP projection outlet');
   const single = await copyOMP(page, context, origin, ['Angular UI context check']);
   assert.match(single, /CardComponent/);
+  assert.match(single, /^## A-remark_\d+_[a-z0-9]+ · Page:/m);
   assert.match(single, /conditional/);
-  assert.match(single, /match_scope: owner_host/);
-  assert.match(single, /match_count: 1/);
+  assert.match(single, /^Build: 2\.2\.0 · [0-9a-f]{12}(?:\+dirty\.[0-9a-f]{10})? · label, anchor-chain, hop-count=v2, overlay-cause, projection-edge$/m);
+  assert.equal(single.match(/^Build:/gm).length, 1);
+  assert.match(single, /^Anchor chain: data-testid="conditional" \(0 up\)/m);
+  assert.doesNotMatch(single, /match_scope|match_count/);
   assert.doesNotMatch(single, /OMP same|private=query|#private|DO_NOT_COLLECT|@file/);
   const copied = await copyOMP(page, context, origin);
   if (process.env.OMP_CLIPBOARD_PATH) await writeFile(process.env.OMP_CLIPBOARD_PATH, copied);
   const blocks = copied.split(/\n\n---\n\n/);
   const block = comment => blocks.find(b => b.includes(`Change: ${comment}\n`));
-  assert.match(block('OMP component host'), /Template owner: .*AppComponent/);
-  assert.match(block('OMP component host'), /Hosted component: .*CardComponent/);
+  assert.match(block('OMP component host'), /^Owner: AppComponent \(fixture-root\) → CardComponent \(fixture-card\)$/m);
   for (const [comment, host, test] of [['OMP same A','fixture-same-a','same-a'], ['OMP same B','fixture-same-b','same-b']]) {
-    const owner = JSON.parse(block(comment).match(/^Template owner: (.+)$/m)[1]);
-    assert.equal(owner.name, 'SameComponent');
-    assert.equal(owner.host.tag, host);
-    assert.match(block(comment), new RegExp(test));
+    assert.ok(block(comment).includes('SameComponent (' + host + ')'));
+    assert.ok(block(comment).includes('Anchor chain: data-testid="' + test + '"'));
   }
-  assert.match(block('OMP component dialog'), /Template owner: .*DialogComponent/);
-  assert.match(block('OMP limited template dialog'), /Template owner: .*MatDialogContainer/);
-  assert.match(block('OMP limited template dialog'), /limitations/);
-  assert.doesNotMatch(block('OMP limited portal'), /Template owner:|AppComponent/);
+  assert.match(block('OMP component dialog'), /^Owner: .*DialogComponent/m);
+  const component = block('OMP projected actions');
+  assert.match(component, /^Owner: AppComponent \(fixture-root\) → TableOutletComponent \(fixture-table; renders the awpTableCell outlet\) ⇢ CellActionsComponent \(fixture-cell-actions; projected cell template\)$/m);
+  assert.match(component, /^Target: fixture-cell-actions$/m);
+  assert.match(component, /^Interactive ancestor: div\[role="cell"\] \(1 up\)$/m);
+  assert.doesNotMatch(component, /^Projected:/m);
+  const outlet = block('OMP projection outlet');
+  assert.match(outlet, /^Owner: AppComponent \(fixture-root\) → TableOutletComponent \(fixture-table; renders the awpTableCell outlet\) ⇢ CellActionsComponent \(fixture-cell-actions; projected cell template\)$/m);
+  assert.match(outlet, /^Projected: fixture-cell-actions \(awpTableCell="actions"\)$/m);
+  assert.doesNotMatch(block('OMP limited template dialog'), /MatDialogContainer|limitations/);
+  assert.doesNotMatch(block('OMP limited portal'), /AppComponent/);
   assert.match(block('OMP limited portal'), /template-portal/);
   // Search independently authored source declarations from copied keys, not
   // from stored annotation metadata; resolve the actual template node.
@@ -396,14 +406,13 @@ async function verifyOMPCopy(page, context, origin) {
     ['OMP limited portal','main.js','AppComponent','data-testid="template-portal"'],
   ]) {
     const pasted = block(comment);
-    const target = JSON.parse(pasted.match(/^Target: (.+)$/m)[1]);
-    const observedOwner = pasted.match(/^Template owner: (.+)$/m);
-    const observed = observedOwner ? JSON.parse(observedOwner[1]) : null;
-    const testId = target.attributes?.['data-testid'];
-    const needle = testId ? `data-testid="${testId}"` : `<${target.tag}`;
+    const tag = pasted.match(/^Target: ([\w-]+)/m)[1];
+    const testId = pasted.match(/^Anchor chain: data-testid=("[^"\n]+")/m)?.[1];
+    const needle = testId ? 'data-testid=' + testId : '<' + tag;
     let found = declarations.filter(d => d.metadata.includes(needle));
-    if (observed?.name && observed.name !== 'MatDialogContainer') {
-      found = found.filter(d => d.owner === observed.name && (!observed.host?.tag || new RegExp(`selector:\\s*['"]${observed.host.tag}['"]`).test(d.metadata)));
+    if (found.length > 1) {
+      const owners = pasted.match(/^Owner: (.+)$/m)?.[1] || '';
+      found = found.filter(d => owners.includes(d.owner));
     }
     assert.equal(found.length, 1, `${comment}: copied keys resolve one source declaration`);
     assert.equal(found[0].file, file);
@@ -418,7 +427,7 @@ async function verifyOMPCopy(page, context, origin) {
 async function verifyDOMCopy(page, context, origin) {
   const text = await copyOMP(page, context, origin, [`DOM fallback UI ${new URL(page.url()).pathname === '/plain' ? '/plain' : '/production?production'}`]);
   assert.match(text, /Target: .*button/);
-  assert.match(text, /no template owner is confirmed/);
+  assert.doesNotMatch(text, /^(?:Owner|Context|Guard):/m);
   assert.doesNotMatch(text, /Template owner:|Hosted component:|Observed owner chain:|@file/);
   assert.ok(text.includes(new URL(page.url()).pathname));
   console.log('PASS: real DOM/optimized JIT clipboard without invented Angular owner');

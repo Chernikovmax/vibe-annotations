@@ -922,13 +922,16 @@ export const VIBE_STYLES = `
 }
 .vibe-resize-grip:hover { color: var(--v-text-primary); }
 
-/* Attachment "+" menu — in the comment field's footer row */
+/* Attachment menu — in the comment field's footer row */
 .vibe-add-btn {
-  width: 26px;
+  padding: 0 6px;
   height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font: 500 11px/1 var(--v-font);
   border: none;
   border-radius: var(--v-radius-sm);
   background: transparent;
@@ -1239,6 +1242,8 @@ export const VIBE_STYLES = `
   position: relative;
 }
 
+.vibe-tb-copy[hidden] { display: none; }
+
 .vibe-toolbar-btn:hover {
   background: var(--v-toolbar-btn-hover);
   color: var(--v-toolbar-text-active);
@@ -1384,6 +1389,14 @@ export const VIBE_STYLES = `
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
+.vibe-toolbar-copy-status {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  animation: none;
+}
+.vibe-toolbar-copy-status:empty { opacity: 0; }
+
 .vibe-send-chip.above { top: auto; bottom: calc(100% + 8px); }
 .vibe-send-chip.out { opacity: 0; transform: translateY(-4px); }
 
@@ -1526,6 +1539,19 @@ export const VIBE_STYLES = `
   top: auto;
   bottom: calc(100% + 8px);
   animation-name: vibe-slide-down;
+}
+
+.vibe-viewall-copy-status:not(:empty) {
+  padding: 4px 12px;
+  color: var(--v-text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.vibe-copy-mode-note {
+  margin: 0 12px 6px;
+  color: var(--v-text-secondary);
+  font-size: 11px;
 }
 
 .vibe-viewall-header {

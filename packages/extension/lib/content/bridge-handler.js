@@ -110,7 +110,7 @@ import VibeEvents, { vibeLocationPath } from './event-bus.js';
 
     // Build annotation
     const annotation = {
-      id: 'vibe_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+      id: 'remark_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
       url: window.location.href,
       selector: context.selector,
       comment: comment || '',
@@ -119,6 +119,9 @@ import VibeEvents, { vibeLocationPath } from './event-bus.js';
         tag: context.tag,
         classes: context.classes,
         text: context.text,
+        state: context.state,
+        translation_key: context.translation_key,
+        handoff: context.handoff,
         path: context.path || null,
         styles: context.styles,
         position: context.position,
@@ -162,7 +165,7 @@ import VibeEvents, { vibeLocationPath } from './event-bus.js';
     if (!css || typeof css !== 'string') throw new Error('css string is required');
 
     const annotation = {
-      id: 'vibe_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+      id: 'remark_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
       type: 'stylesheet',
       url: window.location.href,
       css,

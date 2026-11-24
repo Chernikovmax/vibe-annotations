@@ -6,6 +6,8 @@ import { updateBadge, clearBadge, updateBadgeForUrl, updateAllBadges } from '../
 import { isConnected, checkConnection, getCachedStatus, syncAll, saveOne, deleteOne, smartSync, fetchAnnotations, uploadAttachment, deleteAttachment, fetchExport, fetchWatchers, stopWatchers } from '../lib/background/api-sync.js';
 import { formatExport } from '../lib/background/export.js';
 import { migrateSyncFlags } from '../lib/background/utils.js';
+import { copyText } from '../lib/background/clipboard.js';
+import { exportLocalImages, initImageDownloads } from '../lib/background/image-downloads.js';
 
 import {
   bindLocalAttachments, cleanupExpiredDrafts, clearLocalAttachments,
@@ -62,6 +64,7 @@ class VibeAnnotationsBackground {
     }).catch(error => console.error('Local attachment recovery failed:', error));
     this.setupInstallListener();
     this.setupMessageListener();
+    initImageDownloads();
     this.setupTabListener();
     this.setupStorageListener();
     this.restoreEnabledSites();
@@ -131,7 +134,18 @@ class VibeAnnotationsBackground {
 
   setupMessageListener() {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+      if (request.target === 'offscreen-clipboard') return false;
       switch (request.action) {
+        case 'copyText':
+          copyText(request.text)
+            .then(() => sendResponse({ success: true }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          break;
+        case 'exportLocalImages':
+          this._localAttachmentRecovery.then(() => exportLocalImages(request.images, sender))
+            .then(images => sendResponse({ success: true, images }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          break;
         case 'getAnnotations':
           fetchAnnotations(request.url)
             .then(annotations => sendResponse({ success: true, annotations }))

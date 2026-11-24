@@ -257,6 +257,7 @@ export default defineContentScript({
       const hostedComponent = describe(hosted.value);
       const seen = new Set();
       const names = [];
+      const tags = new Map();
       let unnamed = 0;
       let current = primary;
       let stop = owner.reason || hosted.reason || 'no_owner';
@@ -267,6 +268,8 @@ export default defineContentScript({
         if (name) names.push(name);
         else unnamed++;
         const host = hostOf(current);
+        const tag = host.value?.localName;
+        if (name && tag) tags.set(name, tags.has(name) && tags.get(name) !== tag ? null : tag);
         if (host.reason) { stop = host.reason; break; }
         if (!host.value) { stop = 'no_owner'; break; }
         const parent = call('getOwningComponent', host.value);
@@ -278,13 +281,103 @@ export default defineContentScript({
         current = parent.value;
       }
 
+      // A DOM host can render a view declared by a different component.
+      // Report that boundary separately; do not append it as ordinary ownership.
+      let projection;
+      if (typeof ng.getComponent === 'function' && typeof ng.getOwningComponent === 'function') {
+        const cellSelector = 'td, th, mat-cell, cdk-cell, ng-container, [role="cell"], [role="gridcell"]';
+        let subject = element, subjectHost = hosted.value;
+        if (element.matches(cellSelector)) {
+          const candidates = [...element.children].filter(node => node.localName.includes('-'))
+            .map(node => ({ node, component: call('getComponent', node).value })).filter(candidate => candidate.component);
+          if (candidates.length === 1) ({ node: subject, component: subjectHost } = candidates[0]);
+        } else if (!subjectHost && owner.value && element.closest(cellSelector)) {
+          const host = hostOf(owner.value).value;
+          if (host && host !== element && host.contains(element) && host.closest(cellSelector)) {
+            subject = host;
+            subjectHost = owner.value;
+          }
+        }
+        const cell = subject.closest(cellSelector);
+        let declarer = subject === element ? owner.value : call('getOwningComponent', subject).value;
+        let outletRenderer, outletBinding;
+        if (cell && typeof ng.getDirectives === 'function') {
+          // getOwningComponent reports insertion ownership for embedded views.
+          // Verify membership in a known NgTemplateOutlet before following its
+          // TemplateRef declaration anchor. Never inspect template context or app inputs.
+          const ownValue = (object, key) => object && Object.getOwnPropertyDescriptor(object, key)?.value;
+          findOutlet: for (let root = subject; root && root !== cell; root = root.parentElement) {
+            for (let marker = root.nextSibling; marker; marker = marker.nextSibling) {
+              if (marker.nodeType !== Node.COMMENT_NODE) continue;
+              for (const directive of call('getDirectives', marker).value || []) {
+                if (nameOf(directive) !== 'NgTemplateOutlet') continue;
+                try {
+                  // Angular versions that do not expose this view handle cannot prove the edge.
+                  const view = ownValue(directive, '_viewRef');
+                  if (!view?.rootNodes?.some(node => node === subject || node.contains(subject))) continue;
+                  const template = ownValue(directive, 'ngTemplateOutlet');
+                  const declaredAt = ownValue(ownValue(template, 'elementRef'), 'nativeElement');
+                  const observed = declaredAt && call('getOwningComponent', declaredAt).value;
+                  if (observed) {
+                    declarer = observed;
+                    if (typeof ng.getDirectiveMetadata === 'function') {
+                      for (const bindingDirective of call('getDirectives', declaredAt).value || []) {
+                        const metadata = call('getDirectiveMetadata', bindingDirective).value;
+                        if (metadata?.inputs && Object.hasOwn(metadata.inputs, 'awpTableCell')) { outletBinding = 'awpTableCell'; break; }
+                      }
+                    }
+                    outletRenderer = call('getOwningComponent', directive).value || call('getOwningComponent', marker).value;
+                    // Material instantiates the cell view under MatRow/MatTable.
+                    // Follow their declaration owners, not the DOM layout wrappers.
+                    const seenRenderers = new Set();
+                    while (outletRenderer) {
+                      const host = hostOf(outletRenderer).value;
+                      if (!/^(?:_?Mat|_?Cdk)[A-Z]/.test(nameOf(outletRenderer) || '')
+                        && !/^(?:mat-|cdk-|mdc-)/.test(host?.localName || '')) break;
+                      if (!host || seenRenderers.has(outletRenderer)) { outletRenderer = null; break; }
+                      seenRenderers.add(outletRenderer);
+                      outletRenderer = call('getOwningComponent', host).value;
+                    }
+                    break findOutlet;
+                  }
+                } catch { /* no verified projection evidence */ }
+              }
+            }
+          }
+        }
+        const declarerHost = declarer && hostOf(declarer).value;
+        const declarerName = declarer && nameOf(declarer);
+        // A cell edge requires evidence for its specific outlet, not just a DOM wrapper.
+        if (declarerHost && declarerName && (!cell || outletRenderer)) {
+          for (let node = parentDeep(subject); node && node !== declarerHost; node = parentDeep(node)) {
+            // Limit this to nested rendering: a detached dialog/portal is not a child outlet.
+            if (!node.localName.includes('-') || node.localName === 'awp-hiding-panel' || !declarerHost.contains(node)) continue;
+            const renderer = call('getComponent', node).value;
+            if (!renderer || (outletRenderer && renderer !== outletRenderer) || renderer === declarer || renderer === subjectHost) continue;
+            const name = nameOf(renderer);
+            if (!name || /^(?:_?Mat|_?Cdk)[A-Z]/.test(name) || /^(?:mat-|cdk-|mdc-)/.test(node.localName)) continue;
+            projection = {
+              declared_by: describe(declarer),
+              renderer: describe(renderer),
+              projected: describe(subjectHost),
+              cell: !!cell,
+              ...(outletBinding ? { outlet_binding: outletBinding } : {}),
+              outlet_target: subject !== element && element.matches(cellSelector),
+            };
+            break;
+          }
+        }
+      }
+
       const angular = {
+        ...(projection ? { projection } : {}),
         ...(nameOf(primary) ? { component: nameOf(primary) } : {}),
         ...(templateOwner ? { template_owner: templateOwner } : {}),
         ...(hostedComponent ? { hosted_component: hostedComponent } : {}),
         chain: {
           status: 'observed',
           components: names.reverse(),
+          hosts: Object.fromEntries(tags),
           stop_reason: stop,
           instance_count: seen.size,
           ...(unnamed ? { unnamed_count: unnamed } : {}),

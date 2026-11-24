@@ -1,10 +1,10 @@
-# ng-vibe-remarker
+# Remarker
 
 [![Chrome Web Store](https://img.shields.io/badge/Chrome_Web_Store-6K+_users-green?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/gkofobaeeepjopdpahbicefmljcmpeof) [![Server Package](https://img.shields.io/badge/Server-NPM-blue)](https://www.npmjs.com/package/vibe-annotations-server) [![License: PolyForm Shield](https://img.shields.io/badge/License-PolyForm%20Shield-blue)](https://polyformproject.org/licenses/shield/1.0.0)
 
 Visual feedback tool for web development. Annotate elements on your pages, make design tweaks, and share with AI coding agents or teammates.
 
-This checkout builds **ng-vibe-remarker**, a local Angular-aware extension derived
+This checkout builds **Remarker**, a local Angular-aware extension derived
 from Vibe Annotations. The Web Store, server/plugin packages and upstream docs linked
 below still refer to the upstream product, not a published release of this fork.
 Build with `pnpm --filter vibe-annotations-extension build` and load
@@ -80,31 +80,111 @@ for untested versions.
 
 ### Copy for OMP (manual text handoff)
 
-In **View all → Copy**, choose **Копировать для OMP** in **Copy format**.
-Review the fields/images, deselect sensitive fields or entire annotations, then
-**Copy text** and paste into the OMP session you choose. The existing Markdown
-option remains available. No session discovery, delivery API, MCP or native host
-is involved; copying reads local annotations and does not delete originals.
+**Copy**, beside **View all**, is visible when the current project has annotations
+to copy. It runs the same action as **View all → Copy** without opening the list.
+Both put compact OMP text on the clipboard without a review dialog by default. In the floating toolbar's **Settings → Copy mode**, choose **Markdown · direct**
+for text only, or **Review before copying** to choose a format and exclude sensitive
+fields, annotations, or images. Copying neither contacts OMP nor deletes originals.
 
-Each separated note starts with the requested change and URL without query/hash,
-then observed template owner/host, independent hosted component, target test
-attributes/classes and locator with actual scope/count or its unavailable reason.
-Observed chain/status/stop reason/limitations precede clearly labeled search
-guidance; additional reviewed DOM context follows. Structure wins over hints.
-For old records without structured Angular/target context, only identifier-only
-component hints are retained as reviewed, **unconfirmed** search keys; free-form
-legacy hints that might contain input values are omitted. Excluded owners/targets
-are not reconstructed from hints or duplicate DOM identity fields.
+Clipboard writes run in an extension-owned offscreen document with `clipboardWrite`,
+not in the inspected page. Copy therefore also works on plain HTTP pages without
+`navigator.clipboard` and does not require granting the site clipboard access.
+Reload the unpacked extension after rebuilding to apply the `clipboardWrite`,
+`offscreen`, `downloads` and `alarms` permissions, then refresh the inspected page.
 
-Names can repeat; host tags are not proof of Angular selectors. Limited
-TemplateRef/portal ownership remains limited, not an inferred declaration owner.
-No source paths, `@file` references or line numbers are generated. With no Angular
-discovery API, use the retained DOM keys.
+Toolbar dragging starts only on non-interactive toolbar chrome, never on flyout
+panels or controls. Copy remains a click even with slight pointer movement while
+pressed; `local-export-runtime.mjs` covers this gesture and genuine toolbar dragging.
 
-Text never transfers images: retained attachments produce a ZIP-transfer reminder,
-not blob URLs, local IDs as paths or fake image links. **Share / Export → ZIP**
-remains the separate image-transfer path; copying does not require image bytes to
-be exportable. The ZIP schema and attachment lifecycle are unchanged.
+New annotation text samples separate neighboring DOM text nodes with spaces,
+omit explicitly hidden/ARIA-hidden content and scripts, and end truncated samples
+with `…`. Input values are never read for these samples. Existing saved text is
+not reconstructed from the current page; recreate an old note to refresh its sample.
+Run `node packages/extension/tests/context-text-runtime.mjs` for the browser regression.
+
+Every OMP handoff begins with one build line: extension version, Git revision
+(with a working-tree fingerprint on local builds), and format capabilities.
+Each OMP note fits in 12 lines. It has a stable annotation ID and a page URL
+without query or fragment. `Anchor chain` lists up to four `data-testid` values
+nearest first, stopping at the nearest detected widget host. Hops count actual
+`parentElement` links: the target is zero, its parent is one, and the count stops
+at a shadow root. Development builds independently verify captured ancestor
+counts. An actions host can use `Anchor chain (from cell)`: those distances
+start at its immediate interactive cell, while `Target` is still the selected
+host. Anchors with no verified distance remain in the chain as `(unverified)`.
+New annotations use `remark_` IDs; existing IDs are not rewritten.
+A widget host is a project custom element with `data-widget-id` or a tag ending
+in `-widget`. If there are no test IDs, the chain gives a DOM `id` or `none`.
+`Target` and `Attrs` describe the selected node only. Target classes are ranked
+by match count in the live DOM root, with utility and framework classes excluded.
+If a unique class is available, shared classes are omitted. `Interactive ancestor`
+shows the closest observed interactive wrapper separately; `Inner` locates a
+recognized runtime value inside a selected control without replacing the target.
+`Text` reports the dynamic kind whether the value or its container is selected.
+Promoted controls
+can include `Label`, `Label key`, and `Label source` on separate lines.
+A translated descendant can supply the key and test IDs on its path to the
+control. Those descendant IDs are not ancestors of the target.
+
+`Cell column` prefers the observed `awpTableCell` key or `data-column-field`
+over the rendered column class and names the source. `Projected` is only
+emitted when the selected target is the outlet. In `Owner`, `→` denotes template
+nesting and `⇢` connects a verified outlet renderer to projected content. When
+the target is the projected component, the output describes that component's
+own template scope without `⇢`. Angular debug information is needed to verify
+a projection edge. A cell edge requires evidence for that specific template
+outlet; layout wrappers are not reported as its renderer. Unobserved fields
+are omitted.
+Picker cursor, default styles, and framework classes are not copied, except
+when a class is the stated evidence for a column. Translated labels are marked
+`<static: i18n>`; live timer readings and unverified text are not copied literally.
+Geometry appears for visual edits or `Layout:`. `covered-by-overlay` names the
+overlay observed above the target at capture time by class or `data-testid`,
+with a numeric computed z-index when available. A layer with neither identifier
+is reported as `unidentified`, not as a bare tag. Known loader classes are
+transient and modal backdrops are sticky; unknown lifetimes are not inferred.
+Applications may expose a classification with `data-remarker-overlay` and a
+condition with `data-remarker-overlay-condition`. Overlay state never replaces
+the target, anchor, or owner.
+
+Add `Guard:`, `Context:`, or `Row:` on separate comment lines when the page
+cannot expose a template branch, workspace/preset/widget, or row identity.
+Russian labels `Условие:`, `Контекст:`, `Строка:`, `Сценарий:`, and
+`Наблюдение:` also work. New captures read `data-workspace-id`, `data-preset-id`,
+`data-widget-id`, `data-tab-index`, and optional `data-remarker-context` and
+`data-remarker-guard` from rendered elements. Row identity comes from
+`data-remarker-row-key`, `data-row-key`, a `data-remarker-key-cell`, or a
+rendered table cell explicitly identified as column `name`. An observed
+column does not prove a template binding. Use `data-remarker-text="static"`
+only for text safe to copy literally. Review the export to exclude identifying
+fields or row values before sharing.
+
+The extension does not read application input values or reconstruct stripped
+Angular source. Missing guards and row keys are not inferred. Old notes use
+only stored evidence; recreate them to capture new DOM metadata. Legacy
+component names are unconfirmed hints, not proof of ownership.
+
+OMP handoff saves selected local images under **Remarker/** in Chrome's configured
+Downloads directory, without a server or native helper. It waits for download completion
+and copies Chrome's actual absolute file path plus an ISO expiry timestamp for each image.
+Excluded images and annotations are not downloaded. Originals are never changed.
+An unreadable selected local image or failed download is reported and leaves the
+clipboard unchanged. Use review to exclude the image, or restore its bytes.
+Legacy server images are marked unavailable rather than given invented paths.
+
+Exported files expire **48 hours after download completion**. An hourly Chrome alarm
+deletes only tracked extension downloads; startup also removes overdue files and
+recreates a missing alarm. Closing Chrome, device sleep or OS scheduling can delay
+deletion. Clearing download history can prevent cleanup, and removing/disabling the
+extension stops it; manually delete leftover exported files in those cases.
+These paths work only for agents with access to this machine's filesystem; SSH and
+container agents need the files shared/mounted separately.
+
+Markdown remains text-only and does not require image bytes. **Share / Export → ZIP**
+remains the portable image-transfer path; its schema is unchanged.
+`node packages/extension/tests/local-export-runtime.mjs` exercises actual downloads,
+exact image bytes at copied paths, review exclusions, download failures, expiry alarm,
+browser-restart cleanup and preservation of original images.
 
 Stage-6 checks passed on installed unpacked builds with Angular 17.3.12/CDK 17.3.10
 and Angular 20.0.0/CDK 20.0.4: single/multiple selected notes, actual clipboard reads,
@@ -115,14 +195,18 @@ Component dialog and limited TemplateRef/portal cases. The actual clipboard text
 was also read in the current OMP session via a temporary local artifact and matched
 against those sources; this is not automatic session delivery or a speed benchmark.
 `chrome://extensions`, runtime manifest and the loaded toolbar logo confirmed the
-installed **ng-vibe-remarker** name. Run the Angular runner above and
+installed **Remarker** name. Run the Angular runner above and
 `node packages/extension/tests/local-export-runtime.mjs` to reproduce browser checks.
 No screenshot permissions were requested; the stage-5 screenshot blocker remains open.
 
 ### Manual local screenshots
 
-The annotation card's **+** menu captures the selected element or a dragged viewport
-region. Opening, saving or editing an annotation never captures automatically; the
+In the annotation card's **Comment** tab, click **Screenshot / image** below the
+text field. Choose **Screenshot this element** to capture the selected element,
+or **Screenshot a region…** and drag over the visible page. Approve Chrome's
+site-access prompt if shown, wait for the thumbnail, then **Save** the annotation.
+Use **Attach file** to choose an existing image instead.
+Opening, saving or editing an annotation never captures automatically; the
 old Screenshots toggle was removed and its stored value is ignored. An annotation
 needs a comment, design change or attachment; an auto-capture setting is not content.
 
@@ -138,7 +222,8 @@ uncheck sensitive fields or images, then download a ZIP containing
 `annotations.json`, `annotations.md`, and actual `attachments/<id>.webp` bytes.
 JSON maps annotation IDs to attachment IDs/relative paths. Unzip it into a
 directory available to your agent and send that directory path: the agent
-cannot read extension IndexedDB, and **Copy** transmits text only. Query and
+cannot read extension IndexedDB. **Copy** in OMP mode instead saves selected
+local images to Downloads and includes their absolute paths; Markdown copies text only. Query and
 fragment are removed from the exported URL copy, not the stored annotation.
 Missing local bytes fail the export visibly; old server attachments are labeled
 unavailable rather than given fake paths. Export does not delete originals,
@@ -185,10 +270,10 @@ Selection guards follow the selecting pointer ID through release/click, not a
 400–700 ms click blackout. Long holds remain owned; the next pointerdown is
 independent. Only a missing post-release click needs a 1500 ms cleanup watchdog.
 
-The unpacked extension is named **ng-vibe-remarker** and uses the unchanged `logo.png`
-for its generated 16/32/48/128 px icons and toolbar artwork. The checkout folder,
-GitHub remotes, package/server/protocol names, storage keys, IndexedDB name and local
-attachment IDs are unchanged; this is visible branding, not a data migration.
+The unpacked extension is named **Remarker** and uses the unchanged `logo.png`
+for its generated 16/32/48/128 px icons and toolbar artwork. The checkout folder is
+now `remarker/`; GitHub remotes, package/server/protocol names, storage keys,
+IndexedDB name and local attachment IDs remain unchanged.
 
 ### Modal UI compatibility
 
@@ -274,8 +359,9 @@ were not supplied. Intermediate versions and Angular CLI AOT production are unte
 the production fixture is optimized/minified JIT. Public ownership and EventTarget
 limits above are unchanged. The known `floating-toolbar-position.test.js` MockElement
 failure (`sendEl.setAttribute is not a function`, 8/9 nested scenarios) was not rerun
-or weakened; this matrix does not claim a green general unit suite. “Copy for OMP”
-remains a future stage, not part of this implementation.
+failure (`sendEl.setAttribute is not a function`, 8/9 nested scenarios) was not rerun
+or weakened; this matrix does not claim a green general unit suite. OMP copy is
+implemented as direct compact clipboard output by default.
 
 
 

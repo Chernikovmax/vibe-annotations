@@ -229,9 +229,9 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
       ${warningHTML}
       <div class="vibe-mode-panel" data-mode="comment">
         <div class="vibe-input-wrap">
-          <textarea class="vibe-textarea vibe-textarea-add" placeholder="Describe the change for your AI agent…" maxlength="1000">${isEdit ? P.escapeHTML(existingAnnotation.comment) : ''}</textarea>
+          <textarea class="vibe-textarea vibe-textarea-add" placeholder="Name the element or change. For bugs, add Scenario: and Observation: on separate lines." maxlength="1000">${isEdit ? P.escapeHTML(existingAnnotation.comment) : ''}</textarea>
           <div class="vibe-input-foot">
-            <button class="vibe-add-btn" type="button" title="Add an attachment">${VIBE_PLUS_ICON}</button>
+            <button class="vibe-add-btn" type="button" title="Attach an image or take a screenshot" aria-expanded="false">${VIBE_PLUS_ICON}<span>Screenshot / image</span></button>
             <span class="vibe-kbd-hint">${P.kbdHint} to save</span>
           </div>
           <span class="vibe-resize-grip" title="Drag to resize">
@@ -328,7 +328,7 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
     const isLocal = VibeAPI.isLocalOrigin();
     // Stable for the entire editing session, including failed Save retries.
     const draftId = 'draft_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-    const annotationId = existingAnnotation?.id || 'vibe_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    const annotationId = existingAnnotation?.id || 'remark_' + Date.now() + '_' + Math.random().toString(36).slice(2);
     const pendingAttachments = []; // Legacy user-picked images only.
     const sessionBlobUrls = new Map();
     let localAttachments = (existingAnnotation?.attachments || []).filter(a => a.local_only);
@@ -408,15 +408,16 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
       markAttachmentsChanged();
     }
 
-    // "+" menu: Attach file / Take a screenshot. The "+" rotates into an "×" open.
+    // Labeled attachment menu in the comment field.
     const addBtn = popover.querySelector('.vibe-add-btn');
     const addMenu = popover.querySelector('.vibe-add-menu');
-    const closeAddMenu = () => { addMenu.hidden = true; addBtn.classList.remove('open'); };
+    const closeAddMenu = () => { addMenu.hidden = true; addBtn.classList.remove('open'); addBtn.setAttribute('aria-expanded', 'false'); };
     addBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       const open = addMenu.hidden;
       addMenu.hidden = !open;
       addBtn.classList.toggle('open', open);
+      addBtn.setAttribute('aria-expanded', String(open));
     });
     addMenu.querySelector('[data-add="file"]').addEventListener('click', () => { closeAddMenu(); attachInput.click(); });
     addMenu.querySelector('[data-add="shot"]').addEventListener('click', () => { closeAddMenu(); takeScreenshot(); });
@@ -1281,7 +1282,7 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
 
   function buildAnnotation(context, comment, pendingChanges) {
     const annotation = {
-      id: 'vibe_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+      id: 'remark_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
       url: window.location.href,
       selector: context.selector,
       comment,
@@ -1290,6 +1291,9 @@ import { variantContext, currentVariant, variantElement, previewVariant, chooseV
         tag: context.tag,
         classes: context.classes,
         text: context.text,
+        state: context.state,
+        translation_key: context.translation_key,
+        handoff: context.handoff,
         path: context.path || null,
         styles: context.styles,
         position: context.position,
